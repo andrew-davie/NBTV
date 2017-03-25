@@ -6,21 +6,16 @@
 #include <SdFat.h>
 #include <PID_v1.h>
 
-#define RPM 3000
-
 
 File nbtv;
 SdFat nbtvSD;
 StreamAudioVideoFromSD wav;
 
-
-//-- PID --
-double PID_desiredRPM, PID_motorDuty;
+volatile double PID_desiredRPM, PID_motorDuty;
 volatile double PID_currentRPM;
 PID rpmPID(&PID_currentRPM, &PID_motorDuty, &PID_desiredRPM,25,1,0, DIRECT);
 
 //------------------------------------------------------------------------------------------------------
-// Setup...
 
 void setup() {
 

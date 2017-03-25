@@ -2,6 +2,8 @@
 // Andrew Davie, March 2017
 // Use the code however you wish
 
+#ifndef televisor_h
+#define televisor_h
 
 #define DEBUG
 
@@ -27,5 +29,11 @@
 
 #define MOTOR_DUTY        OCR0B
 #define LED_DUTY          OCR0A
+
+#define CIRCULAR_BUFFER_SIZE 512
+
+
+#endif
+
 
 

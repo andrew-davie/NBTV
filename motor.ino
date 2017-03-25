@@ -1,4 +1,6 @@
-const int PIN_MOTOR = 3;
+const unsigned int PIN_MOTOR = 3;
+const unsigned int RPM = 3000;
+
 
 //------------------------------------------------------------------------------------------------------
 // PWM to control motor speed
