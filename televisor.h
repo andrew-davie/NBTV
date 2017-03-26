@@ -5,6 +5,27 @@
 #ifndef televisor_h
 #define televisor_h
 
+
+/*
+ * Arduino Mechanical TV
+ * 
+ * This code allows an Arduino Micro to act as a Mechanical Television.
+ * A mechanically (scanned) televisino consists of a Nipkow disc (a spinning disc with a spiral of tiny holes)
+ * in front of a light source. The light intensity is varied in synchronisation with the spinning of the disc, and
+ * shines through the spiral holes as they "scan" over the light. Persistance of vision allows us to see a moving
+ * 'televisor' picture. The modern Narrow Bandwidth Television (NBTV) standard is 12.5 frames per second, 32
+ * scanlines.
+ * This implementation plays NBTV video files stored on a SD card as WAV files. The left channel holds the video
+ * information, and the right channel holds mono sound. The code supports a variety of frequencies, but 22050 Hz and
+ * 44100 Hz are reasonable choices.
+ * To build a televisor and use this code, you need a few very simple external circuits, specifically
+ *   1. IR transmitter and detector
+ *   2. Motor control
+ *   3. LED driver
+ *   4. SD card
+ * For a complete build history see https://www.taswegian.com/NBTV/forum/viewforum.php?f=28
+ */
+
 #define DEBUG
 
 

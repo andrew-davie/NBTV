@@ -4,7 +4,6 @@
 
 
 #define HANDLE_TAGS
-#define STEREO_OR_16BIT
 
 class StreamAudioVideoFromSD {
 
@@ -17,7 +16,7 @@ public:
   
   StreamAudioVideoFromSD();
   void readAudioVideoFromSD();
-    boolean wavInfo(char* filename);
+  boolean wavInfo(char* filename);
   void play(char* filename, unsigned long seekPoint=0);
 };
 

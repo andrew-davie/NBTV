@@ -11,22 +11,11 @@ volatile unsigned int playbackPointer = 0;
 volatile int streamPointer = 0;
 volatile byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
 
-
-struct OPTION {
-  boolean BYTE2:1;        // 2 byte playbackPointers
-  boolean LOOP:1;
-  boolean LOOP2:1;        // loop 2nd track
-  boolean BIT16:1;        // 16-bit
-};
-
-
-OPTION option;
-
-
 StreamAudioVideoFromSD::StreamAudioVideoFromSD() {
 
-//  pinMode(PIN_AUDIO, OUTPUT);     // speakerPin  -- TODO  (will be pin 10 - pin 9 is LED)
+//  pinMode(PIN_AUDIO, OUTPUT);     // speakerPin  -- TODO  (will be pin 10)
 
+  //TODO: junk this after testing!
   pinMode(3,OUTPUT);
   pinMode(5,OUTPUT);
   pinMode(6,OUTPUT);
@@ -72,7 +61,7 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
 
 
     
-#if defined(STEREO_OR_16BIT)
+
     byte stereo, bps;
     nbtv.seek(22);
     stereo = nbtv.read();
@@ -83,10 +72,6 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
       Serial.println(stereo);
     #endif
 
-#else
-    nbtv.seek(24);
-#endif
-
 
     sampleRate = nbtv.read();
     sampleRate = nbtv.read() << 8 | sampleRate;
@@ -96,8 +81,7 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
       Serial.println(sampleRate);
     #endif
 
-    #if defined(STEREO_OR_16BIT)
-      // verify that Bits Per playbackPointer is 8 (0-255)
+
       nbtv.seek(34);
       bps = nbtv.read();
       bps = nbtv.read() << 8 | bps;
@@ -107,22 +91,6 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
         Serial.println(bps);
       #endif
       
-      if (stereo == 2) { //_2bytes=1;
-        option.BYTE2 = true;
-        #ifdef DEBUG
-          Serial.println("2 bytes = 1 playbackPointer");
-        #endif
-      }
-      else if (bps == 16) {
-        option.BIT16 = true;
-        option.BYTE2 = true;
-      }
-      else {
-        option.BYTE2 = false;
-        option.BIT16 = false;
-      }
-    #endif
-
     #if defined(HANDLE_TAGS)
 
       #if defined(DEBUG)
@@ -173,72 +141,47 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
 
 void StreamAudioVideoFromSD::play(char* filename, unsigned long seekPoint = 0) {
 
-    //stopPlayback();
-    if (!wavInfo(filename))
-        return;
-
-    Serial.println("Seeking");
-
-    if (seekPoint > 0) {
-        seekPoint = (sampleRate * seekPoint) + nbtv.position();
-        nbtv.seek(seekPoint); // skip the header info
-    }
-
-    // Pre-read as much as possible for playback. Then off goes 'playbackPointer' and streamPointer will try to catch up
-    streamPointer = playbackPointer = 0;
-    nbtv.read( circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE );
-       
-    #ifdef DEBUG
-      Serial.print("Sample rate = ");
-      Serial.println(sampleRate);
-    #endif
-
-    //???
-//    if (sampleRate > 45050) {
-//        sampleRate = 24000;
-//    }
-
-    resolution =  (int)((16000000. / sampleRate)+0.5);
-
-    byte tmp = (nbtv.read() + nbtv.peek()) / 2;
-
-    noInterrupts();
-
-    // Start the timer(s)
-    // Uses /1 divisor, but counting up to 'resolution' each time  --> frequency!
-
-
-    ICR3 = resolution;
-
-    //TODO
-//    #if !defined(DISABLE_SPEAKER2)
-//      TCCR3A = _BV(WGM11) | _BV(COM1A1) | _BV(COM1B0) | _BV(COM1B1); // WGM11,12,13 all set to 1 = fast PWM/w ICR TOP
-//    #else
-
-      // A holds WGM 1:0      
-      
-      TCCR3A = _BV(WGM31) | _BV(COM3A1); // WGM11,12,13 all set to 1 = fast PWM/w ICR TOP
-
-
-    // CS32 CS31  CS30
-    //  0     0     0       no clock
-    //  0     0     1       /1
-    //  0     1     0       /8
-    //  0     1     1       /64 ... etc       
+  //stopPlayback();
+  if (!wavInfo(filename))
+      return;
+  
+  Serial.println("Seeking");
+  
+  if (seekPoint > 0) {
+      seekPoint = (sampleRate * seekPoint) + nbtv.position();
+      nbtv.seek(seekPoint); // skip the header info
+  }
+  
+  // Pre-read as much as possible for playback. Then off goes 'playbackPointer' and streamPointer will try to catch up
+  streamPointer = playbackPointer = 0;
+  nbtv.read( circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE );
+     
+  #ifdef DEBUG
+    Serial.print("Sample rate = ");
+    Serial.println(sampleRate);
+  #endif
+  
+  resolution =  (int)((16000000. / sampleRate)+0.5);
+  
+  byte tmp = (nbtv.read() + nbtv.peek()) / 2;
+  
+  noInterrupts();
+  
+  // Start the timer(s)
+  // Uses /1 divisor, but counting up to 'resolution' each time  --> frequency!
     
-    // so, /1 clock (CS30)
-    //B holds WGM 3:2
+  ICR3 = resolution;
+  TCCR3A = _BV(WGM31) | _BV(COM3A1);
 
-    // see pp.133 ATmega32U4 manual for table
-    
-    TCCR3B = _BV(WGM33) | _BV(WGM32) | _BV(CS30);
-
-    //WGM = 1110 --> FAST PWM with TOP in ICR :)
-    
-    
-    TIMSK3 |= (/*_BV(ICIE3) |*/ _BV(TOIE3));
-
-    interrupts();
+  // see pp.133 ATmega32U4 manual for table
+  
+  TCCR3B = _BV(WGM33) | _BV(WGM32) | _BV(CS30);
+  
+  //WGM = 1110 --> FAST PWM with TOP in ICR :)
+  
+  TIMSK3 |= (/*_BV(ICIE3) |*/ _BV(TOIE3));
+  
+  interrupts();
 }
 
 
