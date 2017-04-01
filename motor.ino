@@ -1,5 +1,5 @@
 const unsigned int PIN_MOTOR = 3;
-const unsigned int RPM = 3000;
+const unsigned int RPM = 1764;
 
 
 //------------------------------------------------------------------------------------------------------
@@ -45,7 +45,8 @@ void setupMotorPWM() {
         
   TCCR0B = 0
           //| bit(WGM02)
-          | bit(CS01)            // prescalar %010 = /1 = 16000000/256/1 = 62.5K
+          | bit(CS02)            // prescalar %010 = /1 = 16000000/256/1 = 62.5K
+          //| bit(CS00)
           ;
 
   MOTOR_DUTY = 255;           // start motor spinning so PID can kick in in interrupt

@@ -26,6 +26,7 @@ void setupIRComparator() {
 
 volatile unsigned long timeDiff = 0;
 volatile unsigned long lastDetectedIR = 0;
+volatile boolean IR = false;
 
 // Appears to co-exist with timer 1 ICP (interrupt) so there goes that timer.
 
@@ -35,13 +36,15 @@ ISR(ANALOG_COMP_vect) {
   //  prolly have to use the frequency(20kHz) as an adjustment.
 
   timeDiff = millis();
-  if (timeDiff-lastDetectedIR > 10)
-    PID_currentRPM = 60. * (1000. / (timeDiff - lastDetectedIR));         // current RPM
-  lastDetectedIR = timeDiff;  
-
+  if (timeDiff-lastDetectedIR > 10) {
+    IR = true;
+    PID_currentRPM = timeDiff - lastDetectedIR; //60. * (1000. / (timeDiff - lastDetectedIR));         // current RPM
+    lastDetectedIR = timeDiff;  
+  }
+  
   // Since there's a new disc speed known, we can recalculate the desired motor speed
   rpmPID.Compute();
-  MOTOR_DUTY = PID_motorDuty;         // PWM duty value for motor control  
+  MOTOR_DUTY = 59 ;//PID_motorDuty;         // PWM duty value for motor control  
 }
 
 

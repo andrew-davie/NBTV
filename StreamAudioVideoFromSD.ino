@@ -11,7 +11,27 @@ extern double brightness;
 volatile byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
 
 volatile unsigned long playbackAbsolute = 0;
-volatile unsigned long streamAbsolute = 0;
+unsigned long streamAbsolute = 0;
+
+
+const uint8_t PROGMEM gamma8[] = {
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,
+    1,  1,  1,  1,  1,  1,  1,  1,  1,  2,  2,  2,  2,  2,  2,  2,
+    2,  3,  3,  3,  3,  3,  3,  3,  4,  4,  4,  4,  4,  5,  5,  5,
+    5,  6,  6,  6,  6,  7,  7,  7,  7,  8,  8,  8,  9,  9,  9, 10,
+   10, 10, 11, 11, 11, 12, 12, 13, 13, 13, 14, 14, 15, 15, 16, 16,
+   17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 24, 24, 25,
+   25, 26, 27, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 35, 35, 36,
+   37, 38, 39, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 50,
+   51, 52, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 66, 67, 68,
+   69, 70, 72, 73, 74, 75, 77, 78, 79, 81, 82, 83, 85, 86, 87, 89,
+   90, 92, 93, 95, 96, 98, 99,101,102,104,105,107,109,110,112,114,
+  115,117,119,120,122,124,126,127,129,131,133,135,137,138,140,142,
+  144,146,148,150,152,154,156,158,160,162,164,167,169,171,173,175,
+  177,180,182,184,186,189,191,193,196,198,200,203,205,208,210,213,
+  215,218,220,223,225,228,231,233,236,239,241,244,247,249,252,255 };
+
 
 
 StreamAudioVideoFromSD::StreamAudioVideoFromSD() {
@@ -223,8 +243,10 @@ ISR(TIMER3_OVF_vect) {
   if (b2 < 0)
     b2 = 0;
 
+  
+
   // Send brightness to LED array
-  OCR4A = (byte)(b2>>5);              
+  OCR4A = pgm_read_byte(&gamma8[(byte)(b2>>6)]);              
   DDRC|=1<<7;    // Set Output Mode C7
   TCCR4A=0x82;  // Activate channel A
   
@@ -265,22 +287,30 @@ void StreamAudioVideoFromSD::readAudioVideoFromSD() {
 //  #endif
 
   unsigned long bytesToStream = playbackAbsolute - streamAbsolute;
-  while (bytesToStream) {
+  if (bytesToStream) {
+
+
 
    #ifdef DEBUG
+
+//      Serial.print("PBA: ");
+//      Serial.print(playbackAbsolute);
+//      Serial.print(" STRA: ");
+//      Serial.print(streamAbsolute);
+      
 
       // Diagnose the largest 'gap' which needs to be filled. This shows in effect how well the SD streaming
       // is going and gives the worst-case buffer size requirement. Of course we could run out of space and that
       // would be a bit of a shame. So we probably need to use the fastest SD card we can find.
       
-      if ( bytesToStream > streamMaximum ) {
-        streamMaximum = bytesToStream;
-        Serial.print("MAX = ");
-        Serial.println(streamMaximum);
+//      if ( bytesToStream > streamMaximum ) {
+//        streamMaximum = bytesToStream;
+//        Serial.print("MAX = ");
+//        Serial.println(streamMaximum);
 
-        if ( streamMaximum >= CIRCULAR_BUFFER_SIZE )
-          Serial.println("CRITICAL: buffer too small!" );
-        }
+//        if ( streamMaximum >= CIRCULAR_BUFFER_SIZE )
+//          Serial.println("CRITICAL: buffer too small!" );
+//        }
     #endif
 
     // Handle end of (circular) buffer by splitting into separate reads from SD card
@@ -288,6 +318,9 @@ void StreamAudioVideoFromSD::readAudioVideoFromSD() {
     if ( bufferOffset + bytesToStream > CIRCULAR_BUFFER_SIZE )
       bytesToStream = CIRCULAR_BUFFER_SIZE - bufferOffset;
 
+//    Serial.print(" ");
+//    Serial.println(bytesToStream);
+    
     // Grab the approrpiate amount of bytes from the SD WAV file
     nbtv.read( circularAudioVideoBuffer + bufferOffset, bytesToStream );
     
@@ -295,4 +328,5 @@ void StreamAudioVideoFromSD::readAudioVideoFromSD() {
     bytesToStream = playbackAbsolute - streamAbsolute;
   }
 }
+
 

@@ -10,7 +10,7 @@ class StreamAudioVideoFromSD {
 private:
   unsigned int sampleRate;
   unsigned int resolution;
-  int streamMaximum;
+  unsigned long streamMaximum;
 
 public:
   

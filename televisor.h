@@ -51,7 +51,7 @@
 #define MOTOR_DUTY        OCR0B
 #define LED_DUTY          OCR0A
 
-#define CIRCULAR_BUFFER_SIZE 512
+#define CIRCULAR_BUFFER_SIZE 256
 
 
 #endif

@@ -13,7 +13,7 @@ StreamAudioVideoFromSD wav;
 
 volatile double PID_desiredRPM, PID_motorDuty;
 volatile double PID_currentRPM;
-PID rpmPID(&PID_currentRPM, &PID_motorDuty, &PID_desiredRPM,25,1,0, DIRECT);
+PID rpmPID(&PID_currentRPM, &PID_motorDuty, &PID_desiredRPM,2,0,0, DIRECT);
 
 //------------------------------------------------------------------------------------------------------
 
@@ -33,12 +33,25 @@ void setup() {
   setupSdCard();
 
   wav.play("22050c.wav");
+//  wav.play("5.wav");
   
 }
 
+extern volatile unsigned long lastDetectedIR;
+int ircount = 0;
 
 void loop() {
   wav.readAudioVideoFromSD();  
+
+/*  extern volatile boolean IR;
+  if (IR) {
+    IR = false;
+    Serial.print("speed ");
+    Serial.println(PID_currentRPM);
+    
+  }
+ */
+//  Serial.println(PID_currentRPM);
 }
 
 
