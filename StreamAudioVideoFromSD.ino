@@ -7,14 +7,12 @@ extern File nbtv;
 extern SdFat nbtvSD;
 extern double brightness;
 
-//volatile unsigned int playbackPointer = 0;
 volatile byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
-
 volatile unsigned long playbackAbsolute = 0;
+volatile unsigned int bitsPerSample;
 unsigned long streamAbsolute = 0;
 
 extern const uint8_t gamma8[];
-
 
 
 StreamAudioVideoFromSD::StreamAudioVideoFromSD() {
@@ -42,7 +40,7 @@ StreamAudioVideoFromSD::StreamAudioVideoFromSD() {
 
 
 
-
+//#define SHOW_WAV_STATS
 
 boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
 
@@ -56,93 +54,142 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
         return false;
     }
 
-    nbtv.seek(8);
-    char wavStr[] = { 'W', 'A', 'V', 'E' };
-    for (byte i = 0; i < 4; i++) {
-        char c = nbtv.read();
-        if (c != wavStr[i]) {
-#if defined(DEBUG)
-            Serial.println("Error: WAVE header incorrect");
-#endif
-            return false;
-        }
+
+    char data[4];
+    nbtv.read(data,4);
+
+    if (strncmp(data,"RIFF",4)) {
+      #ifdef SHOW_WAV_STATS
+        Serial.println("Error: WAV has no RIFF header");
+      #endif
+      return false;
     }
 
+    long chunkSize;
+    nbtv.read(&chunkSize,4);
+    #ifdef SHOW_WAV_STATS
+      Serial.print("WAV size: ");
+      Serial.println(chunkSize+8);
+    #endif
+    
+    nbtv.read(data,4);
+    if (strncmp(data,"WAVE",4)) {
+      #ifdef DEBUG
+        Serial.println("Error: WAVE header incorrect");
+      #endif
+      return false;
+    }
+
+    long position;
+    while (true) {
+
+      nbtv.read(data,4);        // read next chunk header
+
+      #ifdef SHOW_WAV_STATS
+        for (int i=0; i<4; i++){
+          Serial.print("'");
+          Serial.print(data[i]);
+          Serial.print("'");
+        }
+        Serial.println();
+      #endif
+      
+      if (!strncmp(data,"nbtv",4)) {
+        #ifdef SHOW_WAV_STATS
+          Serial.println("'nbtv' chunk");
+        #endif
+        nbtv.read(&chunkSize,4);
+        #ifdef SHOW_WAV_STATS
+          Serial.print("size: ");
+          Serial.println(chunkSize);
+        #endif
+        position = nbtv.position();
+        nbtv.seek(position+chunkSize);
+        continue;
+      }
+
+      if (!strncmp(data,"fmt ",4)) {
+        #ifdef SHOW_WAV_STATS
+          Serial.println("'fmt ' chunk");
+        #endif
+
+        nbtv.read(&chunkSize,4);
+        #ifdef SHOW_WAV_STATS
+          Serial.print("Size: ");
+          Serial.println(chunkSize);
+        #endif
+        
+        position = nbtv.position();
+        
+        int audioFormat;
+        nbtv.read(&audioFormat,2);
+        #ifdef SHOW_WAV_STATS
+          Serial.print("Audio format: ");
+          Serial.println(audioFormat);
+        #endif
+        int numChannels;
+        nbtv.read(&numChannels,2);
+        #ifdef SHOW_WAV_STATS
+          Serial.print("# chans: ");
+          Serial.println(numChannels);
+        #endif
+        //        long sampleRate;
+        nbtv.read(&sampleRate,4);
+        #ifdef SHOW_WAV_STATS
+          Serial.print("rate: ");
+          Serial.println(sampleRate);
+        #endif
+        long byteRate;
+        nbtv.read(&byteRate,4);
+        #ifdef SHOW_WAV_STATS
+          Serial.print("byte rate: ");
+          Serial.println(byteRate);
+        #endif
+        int blockAlign;
+        nbtv.read(&blockAlign,2);
+        #ifdef SHOW_WAV_STATS
+          Serial.print("align: ");
+          Serial.println(blockAlign);
+        #endif
+        nbtv.read(&bitsPerSample,2);
+        #ifdef SHOW_WAV_STATS
+          Serial.print("bps: ");
+          Serial.println(bitsPerSample);
+        #endif
+        
+        // Potential "ExtraParamSize/ExtraParams" ignored because PCM
+
+        nbtv.seek(position+chunkSize);
+        continue;
+      }
+
+      if (!strncmp(data,"data",4)) {                // backwards "data"
+        #ifdef SHOW_WAV_STATS
+          Serial.println("data chunk");
+        #endif
+        
+        nbtv.read(&chunkSize,4);
+        #ifdef SHOW_WAV_STATS
+          Serial.print("size: ");
+          Serial.println(chunkSize);
+        #endif
+        
+        //position = nbtv.position();
+        // and now the file pointer should be pointing at actual sound data - we can return
+
+        break;
+      }
+      
+      #ifdef DEBUG      
+        Serial.print("unrecognised chunk in WAV: '");
+        for (int i=0; i<4; i++)
+          Serial.print(data[i]);
+        Serial.println("'");
+      #endif
+      return false;        
+    }
 
     
-
-    byte stereo, bps;
-    nbtv.seek(22);
-    stereo = nbtv.read();
-    nbtv.seek(24);
-
-    #if defined(DEBUG)
-      Serial.print("STEREO=");
-      Serial.println(stereo);
-    #endif
-
-
-    sampleRate = nbtv.read();
-    sampleRate = nbtv.read() << 8 | sampleRate;
-
-    #if defined(DEBUG)
-      Serial.print("sampleRate=");
-      Serial.println(sampleRate);
-    #endif
-
-
-      nbtv.seek(34);
-      bps = nbtv.read();
-      bps = nbtv.read() << 8 | bps;
-  
-      #if defined(DEBUG)
-        Serial.print("BPS=");
-        Serial.println(bps);
-      #endif
-      
-    #if defined(HANDLE_TAGS)
-
-      #if defined(DEBUG)
-        Serial.println("TAG");
-      #endif
-          
-      nbtv.seek(36);
-      char datStr[4] = { 'd', 'a', 't', 'a' };
-      for (byte i = 0; i < 4; i++) {
-          if (nbtv.read() != datStr[i]) {
-              nbtv.seek(40);
-              unsigned int siz = nbtv.read();
-              siz = (nbtv.read() << 8 | siz) + 2;
-              nbtv.seek(nbtv.position() + siz);
-              for (byte i = 0; i < 4; i++) {
-                  if (nbtv.read() != datStr[i]) {
-                      return 0;
-                  }
-              }
-          }
-      }
-  
-      unsigned long dataBytes = nbtv.read();
-      for (byte i = 8; i < 32; i += 8) {
-          dataBytes = nbtv.read() << i | dataBytes;
-      }
-  
-//      dataEnd = sFile.size() - sFile.position() - dataBytes + buffSize;
-
-    #else // No Tag handling
-
-      #if defined(DEBUG)
-        Serial.println("NO TAG");
-      #endif
-      
-      seek(44);
-//      dataEnd = buffSize;
-
-    #endif
-
-    #if defined(DEBUG)
-      Serial.println("wavInfo(...) complete!");
-    #endif
     
     return true;
 }
@@ -212,44 +259,43 @@ void StreamAudioVideoFromSD::play(char* filename, unsigned long seekPoint = 0) {
 // * Send audio to speaker
 // * Add brightness control
 // * Add contrast (how?)
-// * Gamma correct
 // * Handle sync pulses and clamping
-
-
 
 ISR(TIMER3_OVF_vect) {
 
   int pbp = playbackAbsolute % CIRCULAR_BUFFER_SIZE;
-  int b2 = ( circularAudioVideoBuffer[pbp] << 8 ) | circularAudioVideoBuffer[pbp+1];
 
-  // Trim off anything below zero - typically these are the sync pulses, but that's not guaranteed
-  if (b2 < 0)
-    b2 = 0;
+  if (bitsPerSample==16) {
 
-
-  int brightAdjusted = b2 / 64;     // <-- acts like a contrast knob
-  if (brightAdjusted > 255)
-    brightAdjusted = 255;  
-
-  int gammaAdjusted = pgm_read_byte(&gamma8[brightAdjusted]);
-//  gammaAdjusted *= 5;
-//  if (gammaAdjusted > 255)
-//    gammaAdjusted = 255;
-
-
-  // Send brightness to LED array
-  OCR4A = pgm_read_byte(&gamma8[brightAdjusted]);              
-  DDRC|=1<<7;    // Set Output Mode C7
-  TCCR4A=0x82;  // Activate channel A
+    int b2 = ( circularAudioVideoBuffer[pbp] << 8 ) | circularAudioVideoBuffer[pbp+1];  
   
-  // Move along to the next sample
-  playbackAbsolute += 4;
+    // Trim off anything below zero - typically these are the sync pulses, but that's not guaranteed
+    if (b2 < 0)
+      b2 = 0;
+    
+    int brightAdjusted = b2 / 64 + 20;     // <-- acts like a contrast knob
+    if (brightAdjusted > 255)
+      brightAdjusted = 255;   
   
-//  #ifdef DEBUG
-//    // Detect if we've 'caught up' to the streaming pointer (whoops - that's bad next time around - bad data!)
-//    if ( playbackAbsolute >= streamPointer )
-//      criticalTimingError = true;
-//  #endif
+    // Send brightness to LED array
+    OCR4A = pgm_read_byte(&gamma8[brightAdjusted]);              
+    DDRC|=1<<7;    // Set Output Mode C7
+    TCCR4A=0x82;  // Activate channel A
+
+    // Move along to the next sample
+    playbackAbsolute += 4;
+
+  } else { // assume 8-bit, NBTV WAV file format
+
+    byte b2 = circularAudioVideoBuffer[pbp+1];
+    OCR4A = pgm_read_byte(&gamma8[b2]);
+    DDRC|=1<<7;    // Set Output Mode C7
+    TCCR4A=0x82;  // Activate channel A
+  
+    // Move along to the next sample
+    playbackAbsolute += 2;
+  }
+  
 }
 
 //--------------------------------------------------------------------------------------------------------------------
@@ -279,6 +325,9 @@ void StreamAudioVideoFromSD::readAudioVideoFromSD() {
 //  #endif
 
   unsigned long bytesToStream = playbackAbsolute - streamAbsolute;
+
+  //Serial.println(bytesToStream);
+  
   if (bytesToStream) {
 
 
@@ -322,28 +371,10 @@ void StreamAudioVideoFromSD::readAudioVideoFromSD() {
 }
 
 
+// Gamma correction using parabolic curve
+// Table courtesy Klaas Robers
 
 const uint8_t PROGMEM gamma8[] = {
-
-    /*
-    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,
-    1,  1,  1,  1,  1,  1,  1,  1,  1,  2,  2,  2,  2,  2,  2,  2,
-    2,  3,  3,  3,  3,  3,  3,  3,  4,  4,  4,  4,  4,  5,  5,  5,
-    5,  6,  6,  6,  6,  7,  7,  7,  7,  8,  8,  8,  9,  9,  9, 10,
-   10, 10, 11, 11, 11, 12, 12, 13, 13, 13, 14, 14, 15, 15, 16, 16,
-   17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 24, 24, 25,
-   25, 26, 27, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 35, 35, 36,
-   37, 38, 39, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 50,
-   51, 52, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 66, 67, 68,
-   69, 70, 72, 73, 74, 75, 77, 78, 79, 81, 82, 83, 85, 86, 87, 89,
-   90, 92, 93, 95, 96, 98, 99,101,102,104,105,107,109,110,112,114,
-  115,117,119,120,122,124,126,127,129,131,133,135,137,138,140,142,
-  144,146,148,150,152,154,156,158,160,162,164,167,169,171,173,175,
-  177,180,182,184,186,189,191,193,196,198,200,203,205,208,210,213,
-  215,218,220,223,225,228,231,233,236,239,241,244,247,249,252,255
-  */
-
     0,  0,  0,  0,  1,  1,  1,  1,  1,  1,  1,  1,  2,  2,  2,  2,
     2,  2,  2,  2,  3,  3,  3,  3,  3,  3,  4,  4,  4,  4,  5,  5,
     5,  5,  6,  6,  6,  6,  7,  7,  7,  8,  8,  8,  9,  9,  9, 10,

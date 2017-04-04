@@ -9,6 +9,12 @@ void setupMotorPWM() {
 
   pinMode(PIN_MOTOR, OUTPUT);
 
+
+  // If we're using an IRL540 MOSFET for driving the motor, then it's possible for the floating pin to cause the motor to spin
+  // So we make sure the pin is set LOW ASAP.
+  
+  digitalWrite(PIN_MOTOR,LOW);
+  
 /*  // Setup the PWM
   // WGM02|WGM01|WGM00  = waveform generation 
   //                    = fast PCM with OCRA controlling the counter maximum

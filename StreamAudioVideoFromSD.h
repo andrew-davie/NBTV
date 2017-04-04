@@ -3,8 +3,6 @@
 #define StreamAudioVideoFromSD_h
 
 
-#define HANDLE_TAGS
-
 class StreamAudioVideoFromSD {
 
 private:
