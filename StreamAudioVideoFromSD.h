@@ -2,13 +2,19 @@
 #ifndef StreamAudioVideoFromSD_h
 #define StreamAudioVideoFromSD_h
 
+#include <SdFat.h>
+
 
 class StreamAudioVideoFromSD {
 
 private:
+
+  File nbtv;
+  SdFat nbtvSD;
+
   unsigned int sampleRate;
   unsigned int resolution;
-  unsigned long streamMaximum;
+//  unsigned long streamMaximum;
 
 public:
   

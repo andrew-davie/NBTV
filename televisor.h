@@ -51,7 +51,21 @@
 #define MOTOR_DUTY        OCR0B
 #define LED_DUTY          OCR0A
 
+
+//-----------------------------------------------------------------------------------------
 #define CIRCULAR_BUFFER_SIZE 256
+
+// IFF the circular buffer is a power of 2 in size (it doesn't have to be) then we can define a mask to make the code
+// slightly faster. Disable the following line if the buffer size is NOT a power of two, otherwise code will fail.
+// Finally, the mask is OPTIONAL so use it only if you want "efficient" buffer wrapping. In quotes, because the code
+// compiles longer with the ANDing option. Bizarre.
+
+//#define CIRCULAR_BUFFER_MASK (CIRCULAR_BUFFER_SIZE-1)
+
+//-----------------------------------------------------------------------------------------
+
+
+//#define SHOW_WAV_STATS
 
 
 #endif
