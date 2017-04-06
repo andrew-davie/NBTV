@@ -4,13 +4,13 @@
 
 #include <SdFat.h>
 
+File nbtv;
+SdFat nbtvSD;
 
 class StreamAudioVideoFromSD {
 
 private:
 
-  File nbtv;
-  SdFat nbtvSD;
 
   unsigned int sampleRate;
   unsigned int resolution;

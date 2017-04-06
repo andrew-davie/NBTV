@@ -44,7 +44,7 @@ ISR(ANALOG_COMP_vect) {
   
   // Since there's a new disc speed known, we can recalculate the desired motor speed
   rpmPID.Compute();
-  MOTOR_DUTY = 50; //5 ;//PID_motorDuty;         // PWM duty value for motor control  
+  MOTOR_DUTY = 53; //5 ;//PID_motorDuty;         // PWM duty value for motor control  
 }
 
 

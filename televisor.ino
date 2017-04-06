@@ -34,13 +34,12 @@ void setup() {
   setupMotorPWM();
   setupFastPwm();
 
-  wav.play("22050c.wav");       // this conflicts with NEXTION
-//  wav.play("porridge3.wav");       // this conflicts with NEXTION
+//  wav.play("22050c.wav");       // this conflicts with NEXTION
+  wav.play("porridge3.wav");       // this conflicts with NEXTION
 }
 
 void loop() {
-  wav.readAudioVideoFromSD();  
-  //NextionUiLoop();
+  NextionUiLoop();
 }
 
 

@@ -1,6 +1,7 @@
 #include "televisor.h"
 #include "StreamAudioVideoFromSD.h"
 
+void streamVideo();
 
 
 volatile byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
@@ -232,14 +233,21 @@ void StreamAudioVideoFromSD::play(char* filename, unsigned long seekPoint = 0) {
   ICR3 = (int)((16000000. / sampleRate)+0.5);         // playback frequency
   TCCR3A = _BV(WGM31) | _BV(COM3A1);
   TCCR3B = _BV(WGM33) | _BV(WGM32) | _BV(CS30);       // see pp.133 ATmega32U4 manual for table
-  TIMSK3 |= (/*_BV(ICIE3) |*/ _BV(TOIE3));            //WGM = 1110 --> FAST PWM with TOP in ICR :)
+  TIMSK3 |= (_BV(ICIE3) | _BV(TOIE3));            //WGM = 1110 --> FAST PWM with TOP in ICR :)
   
   interrupts();
 }
 
+boolean capt = false;
 
-//ISR(TIMER3_CAPT_vect) {
-//}
+ISR(TIMER3_CAPT_vect) {
+  if (!capt) {
+    capt = true;          // prevent THIS interrupt from interrupting itself
+    interrupts();         // but allow further interrupts while this one is running
+    streamVideo();
+    capt = false;
+  }
+}
 
 //#ifdef DEBUG
 //  volatile boolean criticalTimingError = false;
@@ -257,8 +265,12 @@ void StreamAudioVideoFromSD::play(char* filename, unsigned long seekPoint = 0) {
 // * Add contrast (how?)
 // * Handle sync pulses and clamping
 
+int customBrightness = 0;
+
 ISR(TIMER3_OVF_vect) {
 
+  int bright;
+  
   #ifdef CIRCULAR_BUFFER_MASK
   int pbp = playbackAbsolute & CIRCULAR_BUFFER_SIZE;
   #else
@@ -267,33 +279,31 @@ ISR(TIMER3_OVF_vect) {
   
   if (bitsPerSample==16) {
 
-    int b2 = *(int *)(circularAudioVideoBuffer+pbp); //( circularAudioVideoBuffer[pbp+1] << 8 ) | circularAudioVideoBuffer[pbp];  
+    playbackAbsolute += 4;
+
+    int b2 = *(int *)(circularAudioVideoBuffer+pbp);
   
     // Trim off anything below zero - typically these are the sync pulses, but that's not guaranteed
     if (b2 < 0)
       b2 = 0;
     
-    int brightAdjusted = b2 / 64 + 20;        // the +20 is a brightness hack.  The /64 downshifts. multiply up for contrast adjust
-    if (brightAdjusted > 255)
-      brightAdjusted = 255;   
-  
-    // Send brightness to LED array
-    OCR4A = pgm_read_byte(&gamma8[brightAdjusted]);              
-    DDRC|=1<<7;    // Set Output Mode C7
-    TCCR4A=0x82;  // Activate channel A
-
-    playbackAbsolute += 4;
+    bright = b2 / 64 + customBrightness;        // the +20 is a brightness hack.  The /64 downshifts. multiply up for contrast adjust
 
   } else { // assume 8-bit, NBTV WAV file format
 
-    byte b2 = circularAudioVideoBuffer[pbp];
-    OCR4A = pgm_read_byte(&gamma8[b2]);
-    DDRC|=1<<7;    // Set Output Mode C7
-    TCCR4A=0x82;  // Activate channel A
-  
     playbackAbsolute += 2;
+    bright = circularAudioVideoBuffer[pbp] + customBrightness;
   }
-  
+
+  if (bright < 0)
+    bright = 0;
+  if (bright > 255)
+    bright = 255;   
+
+  // Send brightness to LED array
+  OCR4A = pgm_read_byte(&gamma8[bright]);
+  DDRC|=1<<7;    // Set Output Mode C7
+  TCCR4A=0x82;  // Activate channel A
 }
 
 //--------------------------------------------------------------------------------------------------------------------
@@ -308,7 +318,10 @@ ISR(TIMER3_OVF_vect) {
 // that the interrupt has nothing to play; in that case it can't do anything but stop and wait - this will cause
 // an image glitch and force resynch on the disc rotation.
 
-void StreamAudioVideoFromSD::readAudioVideoFromSD() {
+
+void streamVideo() {
+
+
   
 //  #ifdef DEBUG
 //
@@ -326,17 +339,9 @@ void StreamAudioVideoFromSD::readAudioVideoFromSD() {
 
   //Serial.println(bytesToStream);
   
-  if (bytesToStream) {
-
-
+  if (bytesToStream > 15) {      //TODO: consider (say) >16 here so we only read larger blocks, less often
 
    #ifdef DEBUG
-
-//      Serial.print(F("PBA: "));
-//      Serial.print(playbackAbsolute);
-//      Serial.print(F(" STRA: "));
-//      Serial.print(streamAbsolute);
-      
 
       // Diagnose the largest 'gap' which needs to be filled. This shows in effect how well the SD streaming
       // is going and gives the worst-case buffer size requirement. Of course we could run out of space and that
@@ -363,15 +368,17 @@ void StreamAudioVideoFromSD::readAudioVideoFromSD() {
     if ( bufferOffset + bytesToStream > CIRCULAR_BUFFER_SIZE )
       bytesToStream = CIRCULAR_BUFFER_SIZE - bufferOffset;
 
-//    Serial.print(F(" "));
-//    Serial.println(bytesToStream);
-    
     // Grab the approrpiate amount of bytes from the SD WAV file
     nbtv.read( circularAudioVideoBuffer + bufferOffset, bytesToStream );
     
     streamAbsolute += bytesToStream;
-    bytesToStream = playbackAbsolute - streamAbsolute;
   }
+
+  
+}
+
+void StreamAudioVideoFromSD::readAudioVideoFromSD() {
+//  streamVideo();
 }
 
 
