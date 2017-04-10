@@ -6,18 +6,17 @@
 #include "StreamAudioVideoFromSD.h"
 #include <PID_v1.h>
 
-//#include <SoftwareSerial.h>
-//SoftwareSerial NexSerial(0,1);// RX, TX
 
 StreamAudioVideoFromSD wav;
 
-volatile double PID_desiredRPM, PID_motorDuty;
-volatile double PID_currentRPM;
-PID rpmPID(&PID_currentRPM, &PID_motorDuty, &PID_desiredRPM,10,1,25, DIRECT);
+volatile double PID_desiredError, PID_motorDuty, PID_currentError;
+PID rpmPID(&PID_currentError, &PID_motorDuty, &PID_desiredError,100,100,500,DIRECT);
 
 //------------------------------------------------------------------------------------------------------
 
 void setup() {
+
+//    delay(3000);
 
   #ifdef DEBUG
     Serial.begin(9600);
@@ -25,21 +24,41 @@ void setup() {
     while (!Serial) {
       SysCall::yield();
     }
+
+    Serial.println(F("Televisor Active!"));
+
+
+    
   #endif
 
-  NextionUiSetup();
+  #ifdef NEXTION
+    NextionUiSetup();
+  #endif
     
   setupIRComparator();
-  setupPID();
   setupMotorPWM();
+  setupPID();
   setupFastPwm();
 
-//  wav.play("22050c.wav");       // this conflicts with NEXTION
-  wav.play("porridge3.wav");       // this conflicts with NEXTION
+  wav.play("22050c.wav");
+//  wav.play("porridge3.wav");
 }
 
 void loop() {
-  NextionUiLoop();
+  #ifdef NEXTION
+    NextionUiLoop();
+  #endif
+
+  extern volatile boolean IR;
+  extern volatile long showMe;
+  if (IR) {
+    IR = false;
+    Serial.print(PID_currentError);
+    Serial.print(",");
+    Serial.println(PID_motorDuty);
+  }
+
+
 }
 
 

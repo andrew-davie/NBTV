@@ -1,5 +1,5 @@
 const unsigned int PIN_MOTOR = 3;
-const unsigned int RPM = 1764;
+const double RPM = 0; //765.25;
 
 
 //------------------------------------------------------------------------------------------------------
@@ -55,7 +55,7 @@ void setupMotorPWM() {
           //| bit(CS00)
           ;
 
-  MOTOR_DUTY = 255;           // start motor spinning so PID can kick in in interrupt
+  MOTOR_DUTY = 120;           // start motor spinning so PID can kick in in interrupt
 }
 
 
@@ -64,11 +64,11 @@ void setupMotorPWM() {
 
 void setupPID() {
   
-  PID_currentRPM = 0;
-  PID_desiredRPM = RPM;       // kludged "about right" rpm based on incorrect speed calculations
-  PID_motorDuty = 255;        // maximum duty
+  PID_currentError = 0;
+  PID_desiredError = 0;         // delta time error target: 0
+  PID_motorDuty = 255;          // maximum duty to kick-start motor and get IR fired up
   
-  rpmPID.SetOutputLimits(0, 255);
+  rpmPID.SetOutputLimits(0, 64);
   rpmPID.SetMode(AUTOMATIC);              // turn on PID
 }
 

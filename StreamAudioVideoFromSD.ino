@@ -1,13 +1,11 @@
 #include "televisor.h"
 #include "StreamAudioVideoFromSD.h"
 
-void streamVideo();
-
-
 volatile byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
 volatile unsigned int bitsPerSample;
 volatile unsigned long playbackAbsolute;
 unsigned long streamAbsolute;
+unsigned long sampleRate;
 
 // Gamma correction using parabolic curve
 // Table courtesy Klaas Robers
@@ -36,33 +34,25 @@ StreamAudioVideoFromSD::StreamAudioVideoFromSD() {
 
 //  pinMode(PIN_AUDIO, OUTPUT);     // speakerPin  -- TODO  (will be pin 10)
 
-//  sampleRate = 0;
-//  resolution = 0;
-//  streamMaximum = 0;
-
-//  playbackAbsolute = 0;
-//  streamAbsolute = 0;
-
   // SD card initialisation
   
-#define SD_CS_PIN 4
-
-  // On the Ethernet Shield, CS is pin 4. It's set as an output by default.
-  // Note that even if it's not used as the CS pin, the hardware SS pin
-  // (10 on most Arduino boards, 53 on the Mega) must be left as an output
-  // or the SD library functions will not work.
-
+  #define SD_CS_PIN 4
   pinMode(SS, OUTPUT);
 
-  if (!nbtvSD.begin(SD_CS_PIN)) {
-    #ifdef DEBUG
-      Serial.println(F("SD failed!"));
-    #endif
-  }
+  #ifdef SDX
+    if (!nbtvSD.begin(SD_CS_PIN)) {
+      #ifdef DEBUG
+        Serial.println(F("SD failed!"));
+      #endif
+    }
+  #endif
+  
 }
 
 
 boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
+
+  #ifdef SDX
 
     nbtv = nbtvSD.open(filename);
     if (!nbtv) {
@@ -152,7 +142,7 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
           Serial.print(F("# chans: "));
           Serial.println(numChannels);
         #endif
-        //        long sampleRate;
+
         nbtv.read(&sampleRate,4);
         #ifdef SHOW_WAV_STATS
           Serial.print(F("rate: "));
@@ -209,18 +199,30 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
     }
 
     return true;
+  #else
+    return false;
+  #endif
 }
 
 
-void StreamAudioVideoFromSD::play(char* filename, unsigned long seekPoint = 0) {
+void StreamAudioVideoFromSD::play(char* filename, unsigned long seekPoint) {
 
+#ifdef SDX
   //stopPlayback();
   if (!wavInfo(filename))
       return;
   
-  if (seekPoint)
-      nbtv.seek( (sampleRate * resolution/8 * seekPoint) + nbtv.position());
-  
+  if (seekPoint) {
+      long seekTo = sampleRate * bitsPerSample * 2 * seekPoint / 8 + nbtv.position();
+      #ifdef DEBUG
+        Serial.print("Seek to ");
+        Serial.println(seekTo);
+      #endif
+      
+      for (long i = 0; i < seekTo; i++)
+        nbtv.read(circularAudioVideoBuffer, 1);
+      //nbtv.seek( seekTo );
+  }
   playbackAbsolute = 0;
   streamAbsolute = 0;
   nbtv.read( circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE );      // pre-fill the circular buffer so it's valid
@@ -236,24 +238,45 @@ void StreamAudioVideoFromSD::play(char* filename, unsigned long seekPoint = 0) {
   TIMSK3 |= (_BV(ICIE3) | _BV(TOIE3));            //WGM = 1110 --> FAST PWM with TOP in ICR :)
   
   interrupts();
+#endif
 }
 
-boolean capt = false;
+boolean alreadyStreaming = false;
 
 ISR(TIMER3_CAPT_vect) {
-  if (!capt) {
-    capt = true;          // prevent THIS interrupt from interrupting itself
-    interrupts();         // but allow further interrupts while this one is running
-    streamVideo();
-    capt = false;
-  }
+
+  #ifdef SDX
+    if (!alreadyStreaming) {
+      alreadyStreaming = true;    // prevent THIS interrupt from interrupting itself...
+      interrupts();               // but allow other interrupts while this one is running
+  
+    // This code tries to fill up the unused part(s) of the circular buffer that contains the streaming audio & video
+    // from the WAV file being played. There are two pointers; 'streamPointer' which is the beginning of the buffer to
+    // which data can be written, and 'playbackPointer' which is the interrupt's current pointer to the sample to play.
+    // Note that 'playbackPointer' can (and will!) change while this routine is streaming data from the SD.  The hope
+    // is that we can read data from the SD to the buffer fast enough to keep the interrupt happy.
+    // Some safeguards and statistics are included;  if the interrupt "catches up" to the stream pointer, then that means
+    // that the interrupt has nothing to play; in that case it can't do anything but stop and wait - this will cause
+    // an image glitch and force resynch on the disc rotation.
+    
+      unsigned long bytesToStream = playbackAbsolute - streamAbsolute;
+      if (bytesToStream > STREAM_THRESHOLD) {
+        long bufferOffset = streamAbsolute % CIRCULAR_BUFFER_SIZE;
+
+        if ( bufferOffset + bytesToStream >= CIRCULAR_BUFFER_SIZE )
+          bytesToStream = CIRCULAR_BUFFER_SIZE - bufferOffset;
+        
+        nbtv.read( circularAudioVideoBuffer + bufferOffset, bytesToStream );
+        
+        streamAbsolute += bytesToStream;
+      }
+      
+      alreadyStreaming = false;
+    }
+
+    #endif
+    
 }
-
-//#ifdef DEBUG
-//  volatile boolean criticalTimingError = false;
-//  int criticalTimingCounter = 0;
-//#endif
-
 
 //--------------------------------------------------------------------------------------------------------------------
 // TIMER3_OFV_vect
@@ -265,120 +288,70 @@ ISR(TIMER3_CAPT_vect) {
 // * Add contrast (how?)
 // * Handle sync pulses and clamping
 
+// Klaas:
+/*
+- Contrast control = multiply by a certain value.
+- DC-restoring = clamping.
+- Brightness control = add / subtract a certain value.
+- Truncation, that is limiting from 00 to FF,
+- This clips off the sync pulses too.
+- Gamma correction.
+- PWM setting.
+*/
+
 int customBrightness = 0;
+double customContrast = 1.0;
+boolean customGamma = true;
 
 ISR(TIMER3_OVF_vect) {
 
   int bright;
-  
-  #ifdef CIRCULAR_BUFFER_MASK
-  int pbp = playbackAbsolute & CIRCULAR_BUFFER_SIZE;
-  #else
   int pbp = playbackAbsolute % CIRCULAR_BUFFER_SIZE;
-  #endif
-  
+
   if (bitsPerSample==16) {
 
     playbackAbsolute += 4;
 
-    int b2 = *(int *)(circularAudioVideoBuffer+pbp);
+    int *bp = (int *)(circularAudioVideoBuffer+pbp);
+    int b2 = *bp;
+
+    #ifdef BACKFILL_BUFFER
+      *bp = 0;        // mask any buffer overflow
+    #endif
+      
+    b2 *= customContrast;
   
     // Trim off anything below zero - typically these are the sync pulses, but that's not guaranteed
     if (b2 < 0)
       b2 = 0;
     
-    bright = b2 / 64 + customBrightness;        // the +20 is a brightness hack.  The /64 downshifts. multiply up for contrast adjust
+    bright = b2 / 64;        // The /64 downshifts. multiply up for contrast adjust
 
   } else { // assume 8-bit, NBTV WAV file format
 
     playbackAbsolute += 2;
-    bright = circularAudioVideoBuffer[pbp] + customBrightness;
+    bright = circularAudioVideoBuffer[pbp];
+    #ifdef BACKFILL_BUFFER
+      circularAudioVideoBuffer[pbp] = 0;        // mask any overflow by using black
+    #endif
+    bright *= customContrast;
   }
+
+
+  bright += customBrightness;
 
   if (bright < 0)
     bright = 0;
-  if (bright > 255)
+  else if (bright > 255)
     bright = 255;   
 
+  if (customGamma)
+    bright = pgm_read_byte(&gamma8[bright]);
+    
   // Send brightness to LED array
-  OCR4A = pgm_read_byte(&gamma8[bright]);
+  OCR4A = (byte) (bright & 0xFF);
   DDRC|=1<<7;    // Set Output Mode C7
   TCCR4A=0x82;  // Activate channel A
-}
-
-//--------------------------------------------------------------------------------------------------------------------
-// readAudioVideoFromSD
-
-// This function tries to fill up the unused part(s) of the circular buffer that contains the streaming audio & video
-// from the WAV file being played. There are two pointers; 'streamPointer' which is the beginning of the buffer to
-// which data can be written, and 'playbackPointer' which is the interrupt's current pointer to the sample to play.
-// Note that 'playbackPointer' can (and will!) change while this routine is streaming data from the SD.  The hope
-// is that we can read data from the SD to the buffer fast enough to keep the interrupt happy.
-// Some safeguards and statistics are included;  if the interrupt "catches up" to the stream pointer, then that means
-// that the interrupt has nothing to play; in that case it can't do anything but stop and wait - this will cause
-// an image glitch and force resynch on the disc rotation.
-
-
-void streamVideo() {
-
-
-  
-//  #ifdef DEBUG
-//
-//    // Catch (and clear) any timing/overflow error signalled by the interrupt
-//    if ( criticalTimingError ) {
-//      criticalTimingError = false;
-//      criticalTimingCounter++;
-//      streamMaximum = 0;                          // reset for a better look at what happens immediately after
-//      Serial.print(F("Critical timing error #"));
-//      Serial.println(criticalTimingCounter);
-//    }
-//  #endif
-
-  unsigned long bytesToStream = playbackAbsolute - streamAbsolute;
-
-  //Serial.println(bytesToStream);
-  
-  if (bytesToStream > 15) {      //TODO: consider (say) >16 here so we only read larger blocks, less often
-
-   #ifdef DEBUG
-
-      // Diagnose the largest 'gap' which needs to be filled. This shows in effect how well the SD streaming
-      // is going and gives the worst-case buffer size requirement. Of course we could run out of space and that
-      // would be a bit of a shame. So we probably need to use the fastest SD card we can find.
-      
-//      if ( bytesToStream > streamMaximum ) {
-//        streamMaximum = bytesToStream;
-//        Serial.print(F("MAX = "));
-//        Serial.println(streamMaximum);
-
-//        if ( streamMaximum >= CIRCULAR_BUFFER_SIZE )
-//          Serial.println(F("CRITICAL: buffer too small!"));
-//        }
-    #endif
-
-    // Handle end of (circular) buffer by splitting into separate reads from SD card
-
-    #ifdef CIRCULAR_BUFFER_MASK
-      long bufferOffset = streamAbsolute & CIRCULAR_BUFFER_SIZE;
-    #else
-      long bufferOffset = streamAbsolute % CIRCULAR_BUFFER_SIZE;
-    #endif
-    
-    if ( bufferOffset + bytesToStream > CIRCULAR_BUFFER_SIZE )
-      bytesToStream = CIRCULAR_BUFFER_SIZE - bufferOffset;
-
-    // Grab the approrpiate amount of bytes from the SD WAV file
-    nbtv.read( circularAudioVideoBuffer + bufferOffset, bytesToStream );
-    
-    streamAbsolute += bytesToStream;
-  }
-
-  
-}
-
-void StreamAudioVideoFromSD::readAudioVideoFromSD() {
-//  streamVideo();
 }
 
 

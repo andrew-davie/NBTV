@@ -4,22 +4,15 @@
 
 #include <SdFat.h>
 
-File nbtv;
-SdFat nbtvSD;
+#ifdef SDX
+  File nbtv;
+  SdFat nbtvSD;
+#endif
 
 class StreamAudioVideoFromSD {
 
-private:
-
-
-  unsigned int sampleRate;
-  unsigned int resolution;
-//  unsigned long streamMaximum;
-
 public:
-  
   StreamAudioVideoFromSD();
-  void readAudioVideoFromSD();
   boolean wavInfo(char* filename);
   void play(char* filename, unsigned long seekPoint=0);
 };
