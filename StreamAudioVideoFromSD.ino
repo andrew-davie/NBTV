@@ -6,6 +6,7 @@ volatile unsigned int bitsPerSample;
 volatile unsigned long playbackAbsolute;
 unsigned long streamAbsolute;
 unsigned long sampleRate;
+long singleFrame;
 
 // Gamma correction using parabolic curve
 // Table courtesy Klaas Robers
@@ -198,6 +199,8 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
       return false;        
     }
 
+    singleFrame = sampleRate * 2 * bitsPerSample / 8 / 12.5;
+
     return true;
   #else
     return false;
@@ -299,9 +302,13 @@ ISR(TIMER3_CAPT_vect) {
 - PWM setting.
 */
 
-int customBrightness = 0;
+int customBrightness = 20;
 double customContrast = 1.0;
 boolean customGamma = true;
+
+extern volatile double motorDutyWhole;
+extern volatile double motorDutyFrac;
+boolean frac = 0;
 
 ISR(TIMER3_OVF_vect) {
 
@@ -352,6 +359,12 @@ ISR(TIMER3_OVF_vect) {
   OCR4A = (byte) (bright & 0xFF);
   DDRC|=1<<7;    // Set Output Mode C7
   TCCR4A=0x82;  // Activate channel A
+
+/*  frac += motorDutyFrac;
+  MOTOR_DUTY = (int)(motorDutyWhole + (int)frac);
+  if (frac>1.0)
+    frac-= 1.0;
+*/
 }
 
 

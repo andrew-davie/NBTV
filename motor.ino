@@ -55,7 +55,7 @@ void setupMotorPWM() {
           //| bit(CS00)
           ;
 
-  MOTOR_DUTY = 120;           // start motor spinning so PID can kick in in interrupt
+  MOTOR_DUTY = 255;           // start motor spinning so PID can kick in in interrupt
 }
 
 
@@ -65,10 +65,10 @@ void setupMotorPWM() {
 void setupPID() {
   
   PID_currentError = 0;
-  PID_desiredError = 0;         // delta time error target: 0
-  PID_motorDuty = 255;          // maximum duty to kick-start motor and get IR fired up
+  PID_desiredError = 0; //singleFrame;
+  PID_motorDuty = 255;                // maximum duty to kick-start motor and get IR fired up
   
-  rpmPID.SetOutputLimits(0, 64);
+  rpmPID.SetOutputLimits(0, 75);
   rpmPID.SetMode(AUTOMATIC);              // turn on PID
 }
 

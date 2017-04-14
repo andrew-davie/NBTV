@@ -10,7 +10,7 @@
  */
 
 #define DEBUG
-//#define NEXTION     
+#define NEXTION     
 #define SDX
 
 // SDCARD...

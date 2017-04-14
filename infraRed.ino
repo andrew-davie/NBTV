@@ -21,6 +21,9 @@ void setupIRComparator() {
 //-- Analog comparator interrupt service routine -------------------------------------------------
 // Triggered by sync hole on IR sensor connected to pin 7 (AC)
 
+volatile double motorDutyWhole = 0;
+volatile double motorDutyFrac = 0;
+
 volatile unsigned long timeDiff = 0;
 volatile unsigned long lastDetectedIR = 0;
 volatile boolean IR = false;
@@ -29,22 +32,64 @@ volatile long desiredTime = 0;
 
 // Appears to co-exist with timer 1 ICP (interrupt) so there goes that timer.
 
+volatile double deltaSample;
+extern long singleFrame;
+
+
 ISR(ANALOG_COMP_vect) {
 
   timeDiff = playbackAbsolute;
-  if (timeDiff - lastDetectedIR > 1000) {         // cater for potential "bounce" on IR detect by not accepting closely spaced signals
+  double deltaSample = timeDiff - lastDetectedIR;
+  if (deltaSample > 1000) {         // cater for potential "bounce" on IR detect by not accepting closely spaced signals
+    lastDetectedIR = timeDiff;
+
+    desiredTime += singleFrame;
+
+    interrupts();
+    
     IR = true;
 
-    long singleFrame = sampleRate * 2 * bitsPerSample / 8 / 12.5;
-    desiredTime += singleFrame;  
-    
-    delta = (double)desiredTime - (double)timeDiff;
-    PID_currentError = delta/100000.;
+    PID_currentError = deltaSample;    
+    rpmPID.Compute();
 
-    lastDetectedIR = timeDiff;
+    MOTOR_DUTY = 47; //(byte)(PID_motorDuty+0.5);
   }
-  rpmPID.Compute();
-  MOTOR_DUTY = PID_motorDuty;
+}
 
+
+double _Kp = 10;
+double _Ki = 0;
+double _Kd = 0.01;
+double _pre_error = 0;
+double _integral = 0;
+
+double error;
+double Pout;
+double Iout;
+double derivative;
+double Dout;
+double output;
+
+   //pid(((double)(timeDiff-lastDetectedIR))/100.,0,PID_currentError); //(int)(PID_motorDuty+0.5);
+ 
+
+double pid( double _dt, double setpoint, double pv ) {
+    
+    error = setpoint - pv;
+    Pout = _Kp * error;
+    _integral += error * _dt;
+    Iout = _Ki * _integral;
+    derivative = (error - _pre_error) / _dt;
+    Dout = _Kd * derivative;
+    output = Pout + Iout + Dout;
+
+    if( output > 255 )
+        output = 255;
+    else if( output < 0 )
+        output = 0;
+
+    // Save error to previous error
+    _pre_error = error;
+    return output;
 }
 
