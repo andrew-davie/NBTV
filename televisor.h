@@ -10,6 +10,11 @@
  */
 
 #define DEBUG
+
+    // >>> Don't forget to open the serial terminal if DEBUG outputs are active! <<<
+
+
+
 #define NEXTION     
 #define SDX
 
@@ -36,14 +41,13 @@
 
 
 //-----------------------------------------------------------------------------------------
-#define CIRCULAR_BUFFER_SIZE 256
-#define STREAM_THRESHOLD 0          /* non-zero will delay streaming until this many bytes needed */
-//#define BACKFILL_BUFFER             /* pads buffer with PREVIOUS scanline pixels as it goes */
+#define CIRCULAR_BUFFER_SIZE 512
+// buffer size must be a multiple of sample size (i.e, (video + audio) * bytes per)) = 4 for 16-bit, and 2 for 8-bit
 
 //-----------------------------------------------------------------------------------------
 
 
-//#define SHOW_WAV_STATS
+#define SHOW_WAV_STATS
 
 
 #endif

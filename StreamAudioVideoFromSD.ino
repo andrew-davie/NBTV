@@ -1,10 +1,16 @@
 #include "televisor.h"
 #include "StreamAudioVideoFromSD.h"
+#include <assert.h>
+
 
 volatile byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
 volatile unsigned int bitsPerSample;
 volatile unsigned long playbackAbsolute;
-unsigned long streamAbsolute;
+volatile unsigned int pbp = 0;
+
+unsigned long videoSampleLength;
+volatile unsigned long streamAbsolute;
+volatile unsigned int bufferOffset = 0;
 unsigned long sampleRate;
 long singleFrame;
 
@@ -30,8 +36,7 @@ const uint8_t PROGMEM gamma8[] = {
   226,228,230,232,234,235,237,239,241,243,245,247,249,251,253,255
   };
 
-
-StreamAudioVideoFromSD::StreamAudioVideoFromSD() {
+void setupStreamAudioVideoFromSD() {
 
 //  pinMode(PIN_AUDIO, OUTPUT);     // speakerPin  -- TODO  (will be pin 10)
 
@@ -51,7 +56,7 @@ StreamAudioVideoFromSD::StreamAudioVideoFromSD() {
 }
 
 
-boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
+boolean wavInfo(char* filename) {
 
   #ifdef SDX
 
@@ -173,15 +178,15 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
         continue;
       }
 
-      if (!strncmp(data,"data",4)) {                // backwards "data"
+      if (!strncmp(data,"data",4)) {
         #ifdef SHOW_WAV_STATS
           Serial.println(F("data chunk"));
         #endif
         
-        nbtv.read(&chunkSize,4);
+        nbtv.read(&videoSampleLength,4);
         #ifdef SHOW_WAV_STATS
-          Serial.print(F("size: "));
-          Serial.println(chunkSize);
+          Serial.print(F("video size: "));
+          Serial.println(videoSampleLength);
         #endif
         
         //position = nbtv.position();
@@ -208,26 +213,30 @@ boolean StreamAudioVideoFromSD::wavInfo(char* filename) {
 }
 
 
-void StreamAudioVideoFromSD::play(char* filename, unsigned long seekPoint) {
+void play(char* filename, unsigned long seekPoint) {
 
 #ifdef SDX
   //stopPlayback();
   if (!wavInfo(filename))
       return;
   
-  if (seekPoint) {
-      long seekTo = sampleRate * bitsPerSample * 2 * seekPoint / 8 + nbtv.position();
-      #ifdef DEBUG
-        Serial.print("Seek to ");
-        Serial.println(seekTo);
-      #endif
-      
-      for (long i = 0; i < seekTo; i++)
-        nbtv.read(circularAudioVideoBuffer, 1);
-      //nbtv.seek( seekTo );
+  if (seekPoint) {    //TODO; not working
+    long seekTo = sampleRate * bitsPerSample * 2 * seekPoint / 8 + nbtv.position();
+    #ifdef DEBUG
+      Serial.print("Seek to ");
+      Serial.println(seekTo);
+    #endif
+    
+    for (long i = 0; i < seekTo; i++)
+      nbtv.read(circularAudioVideoBuffer, 1);
+    //nbtv.seek( seekTo );
   }
+
   playbackAbsolute = 0;
   streamAbsolute = 0;
+  pbp = 0;
+  bufferOffset = 0;
+  
   nbtv.read( circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE );      // pre-fill the circular buffer so it's valid
  
   noInterrupts();
@@ -244,106 +253,74 @@ void StreamAudioVideoFromSD::play(char* filename, unsigned long seekPoint) {
 #endif
 }
 
+unsigned int bytesToStream;
 boolean alreadyStreaming = false;
 
 ISR(TIMER3_CAPT_vect) {
 
   #ifdef SDX
+    
     if (!alreadyStreaming) {
       alreadyStreaming = true;    // prevent THIS interrupt from interrupting itself...
       interrupts();               // but allow other interrupts while this one is running
   
-    // This code tries to fill up the unused part(s) of the circular buffer that contains the streaming audio & video
-    // from the WAV file being played. There are two pointers; 'streamPointer' which is the beginning of the buffer to
-    // which data can be written, and 'playbackPointer' which is the interrupt's current pointer to the sample to play.
-    // Note that 'playbackPointer' can (and will!) change while this routine is streaming data from the SD.  The hope
-    // is that we can read data from the SD to the buffer fast enough to keep the interrupt happy.
-    // Some safeguards and statistics are included;  if the interrupt "catches up" to the stream pointer, then that means
-    // that the interrupt has nothing to play; in that case it can't do anything but stop and wait - this will cause
-    // an image glitch and force resynch on the disc rotation.
+      // This code tries to fill up the unused part(s) of the circular buffer that contains the streaming audio & video
+      // from the WAV file being played. There are two pointers; 'streamPointer' which is the beginning of the buffer to
+      // which data can be written, and 'playbackPointer' which is the interrupt's current pointer to the sample to play.
+      // Note that 'playbackPointer' can (and will!) change while this routine is streaming data from the SD.  The hope
+      // is that we can read data from the SD to the buffer fast enough to keep the interrupt happy.
     
-      unsigned long bytesToStream = playbackAbsolute - streamAbsolute;
-      if (bytesToStream > STREAM_THRESHOLD) {
-        long bufferOffset = streamAbsolute % CIRCULAR_BUFFER_SIZE;
-
-        if ( bufferOffset + bytesToStream >= CIRCULAR_BUFFER_SIZE )
-          bytesToStream = CIRCULAR_BUFFER_SIZE - bufferOffset;
+      bytesToStream = playbackAbsolute - streamAbsolute;
+      if (bytesToStream > 64) {                                   // theory: more efficient to do bigger blocks less frequently
+        bytesToStream = 64;
         
-        nbtv.read( circularAudioVideoBuffer + bufferOffset, bytesToStream );
-        
+        byte *dest = circularAudioVideoBuffer + bufferOffset;
+        bufferOffset += bytesToStream;
+        if ( bufferOffset >= CIRCULAR_BUFFER_SIZE ) {
+          bytesToStream = CIRCULAR_BUFFER_SIZE - bufferOffset + bytesToStream;
+          bufferOffset = 0;
+        }
+        nbtv.read( dest, bytesToStream );
         streamAbsolute += bytesToStream;
       }
       
       alreadyStreaming = false;
     }
-
-    #endif
-    
+  #endif //SDX
 }
 
 //--------------------------------------------------------------------------------------------------------------------
 // TIMER3_OFV_vect
 // This is an interrupt that runs at the frequency of the WAV file data (i.e, 22050Hz, 44100Hz, ...)
 // It takes data from the circular buffer 'circularAudioVideoBuffer' and sends it to the LED (and soon, to the speaker).
-// TODO:
-// * Send audio to speaker
-// * Add brightness control
-// * Add contrast (how?)
-// * Handle sync pulses and clamping
 
-// Klaas:
-/*
-- Contrast control = multiply by a certain value.
-- DC-restoring = clamping.
-- Brightness control = add / subtract a certain value.
-- Truncation, that is limiting from 00 to FF,
-- This clips off the sync pulses too.
-- Gamma correction.
-- PWM setting.
-*/
-
-int customBrightness = 20;
-double customContrast = 1.0;
+int customBrightness = 0;
 boolean customGamma = true;
-
-extern volatile double motorDutyWhole;
-extern volatile double motorDutyFrac;
-boolean frac = 0;
+long customContrast2 = 256;      // a X.Y fractional  (8 bit fractions) so 256 = 1.0f   and 512 = 2.0f
 
 ISR(TIMER3_OVF_vect) {
 
-  int bright;
-  int pbp = playbackAbsolute % CIRCULAR_BUFFER_SIZE;
-
+  long bright;
   if (bitsPerSample==16) {
-
-    playbackAbsolute += 4;
-
-    int *bp = (int *)(circularAudioVideoBuffer+pbp);
-    int b2 = *bp;
-
-    #ifdef BACKFILL_BUFFER
-      *bp = 0;        // mask any buffer overflow
-    #endif
-      
-    b2 *= customContrast;
-  
-    // Trim off anything below zero - typically these are the sync pulses, but that's not guaranteed
-    if (b2 < 0)
-      b2 = 0;
     
-    bright = b2 / 64;        // The /64 downshifts. multiply up for contrast adjust
-
+    bright = *(int *)(circularAudioVideoBuffer+pbp) * customContrast2;
+    bright >>= 14;
+    
+    playbackAbsolute += 4;
+    pbp += 4;
+    
   } else { // assume 8-bit, NBTV WAV file format
 
+    bright = circularAudioVideoBuffer[pbp] * customContrast2;
+    bright >>= 8;
+    
     playbackAbsolute += 2;
-    bright = circularAudioVideoBuffer[pbp];
-    #ifdef BACKFILL_BUFFER
-      circularAudioVideoBuffer[pbp] = 0;        // mask any overflow by using black
-    #endif
-    bright *= customContrast;
+    pbp += 2;
+    
   }
-
+  
+  if (pbp >= CIRCULAR_BUFFER_SIZE)
+    pbp = 0;
 
   bright += customBrightness;
 
@@ -352,19 +329,9 @@ ISR(TIMER3_OVF_vect) {
   else if (bright > 255)
     bright = 255;   
 
-  if (customGamma)
-    bright = pgm_read_byte(&gamma8[bright]);
-    
-  // Send brightness to LED array
-  OCR4A = (byte) (bright & 0xFF);
-  DDRC|=1<<7;    // Set Output Mode C7
-  TCCR4A=0x82;  // Activate channel A
-
-/*  frac += motorDutyFrac;
-  MOTOR_DUTY = (int)(motorDutyWhole + (int)frac);
-  if (frac>1.0)
-    frac-= 1.0;
-*/
+  OCR4A = customGamma ? pgm_read_byte(&gamma8[bright]) : (byte)bright;
+  DDRC |= 1<<7;                       // Set Output Mode C7
+  TCCR4A = 0x82;                      // Activate channel A
 }
 
 

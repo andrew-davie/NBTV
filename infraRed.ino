@@ -52,7 +52,7 @@ ISR(ANALOG_COMP_vect) {
     PID_currentError = deltaSample;    
     rpmPID.Compute();
 
-    MOTOR_DUTY = 47; //(byte)(PID_motorDuty+0.5);
+    MOTOR_DUTY = 55; //(byte)(PID_motorDuty+0.5);
   }
 }
 

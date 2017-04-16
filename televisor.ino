@@ -6,9 +6,6 @@
 #include "StreamAudioVideoFromSD.h"
 #include "pidv2.h"
 
-
-StreamAudioVideoFromSD wav;
-
 volatile double PID_desiredError, PID_motorDuty, PID_currentError;
 PID rpmPID(&PID_currentError, &PID_motorDuty, &PID_desiredError,-1,0,0,DIRECT);
 
@@ -17,6 +14,9 @@ PID rpmPID(&PID_currentError, &PID_motorDuty, &PID_desiredError,-1,0,0,DIRECT);
 void setup() {
 
   #ifdef DEBUG
+
+    // >>> Don't forget to open the serial terminal if DEBUG outputs are active! <<<
+  
     Serial.begin(9600);
     while (!Serial) {
       SysCall::yield();
@@ -31,23 +31,38 @@ void setup() {
   setupIRComparator();
   setupMotorPWM();
   setupFastPwm();
+  setupStreamAudioVideoFromSD();
+  
 
-  wav.play("22050c.wav");
-
+//  play("MUTR07x5.nbtv8.wav");
+//  play("36b.nbtv8.wav");
+//  play("40.nbtv8.wav");
+//  play("45.nbtv8.wav");
+  play("who.nbtv8.wav");
+//  play("22050c.wav");
+  
+//  wav.play("whoclip4.wav");
+//  wav.play("porridgeX.wav");
+//  wav.play("19200.wav");
+  
   setupPID();
 
-//  wav.play("porridge3.wav");
 }
 
 void loop() {
+
+  Serial.println("loop");
+  
   #ifdef NEXTION
     NextionUiLoop();
   #endif
 
   extern volatile boolean IR;
-  if (IR) {
+//  if (IR) {
     IR = false;
-//    Serial.println(PID_currentError);
-  }
+
+    extern boolean alreadyStreaming;
+    Serial.println(alreadyStreaming);
+//  }
 }
 

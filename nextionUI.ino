@@ -23,8 +23,11 @@
 #include "NexText.h"
 
 extern int customBrightness;        // 0 = normal
-extern double customContrast;       // 1.0 = normal
+extern long customContrast2;       // binary fraction 128 = 1.0 = normal
 extern boolean customGamma;         // true = use gamma lookup table
+
+extern unsigned long videoSampleLength;
+uint32_t lastSeekPosition = 0;
 
 NexSlider seekerSlider = NexSlider(0, 12, "seek");
 NexSlider brightnessSlider = NexSlider(0, 8, "brightness");
@@ -34,76 +37,88 @@ NexCheckbox gammaCheckbox = NexCheckbox(0, 3, "gamma");
 NexButton stopButton = NexButton(0, 4, "stopButton");
 NexText timePos = NexText(0, 9, "timePos");
 
-NexTouch *nex_Listen_List[] = {
-    &stopButton,
-    &seekerSlider,
-    &contrastSlider,
-    &brightnessSlider,
-    &gammaCheckbox,
-    &volumeSlider,
-    NULL
-};
-
-void brightnessCallback(void *ptr) {
-  NexSlider *slider = (NexSlider *) ptr;
-  uint32_t bright;
-  if (slider->getValue(&bright))
-    customBrightness = (int)(256.*(bright-50.)/50.);
-}
-
-void contrastCallback(void *ptr) {
-  NexSlider *slider = (NexSlider *) ptr;
-  uint32_t contrast;
-  slider->getValue(&contrast);
-  customContrast = (double)(contrast/50.0);       // range: 0 - 2.0
-}
 
 boolean stopped = false;
 
-void stopButtonCallback(void *ptr) {
-  NexButton *stopButton = (NexButton *) ptr;
-  stopped = !stopped;
-//  Serial.print(F("STOP = "));
-//  Serial.println(stopped);
-}
+//void stopButtonCallback(void *ptr) {
+//  NexButton *stopButton = (NexButton *) ptr;
+//  stopped = !stopped;
+////  Serial.print(F("STOP = "));
+////  Serial.println(stopped);
+//}
 
-void volumeCallback(void *ptr) {
-  NexSlider *slider = (NexSlider *) ptr;
-  uint32_t volume;
-  slider->getValue(&volume);
-//  Serial.print(F("VOLUME ="));
-//  Serial.println(volume);
-}
+//void volumeCallback(void *ptr) {
+//  NexSlider *slider = (NexSlider *) ptr;
+//  uint32_t volume;
+//  slider->getValue(&volume);
+////  Serial.print(F("VOLUME ="));
+////  Serial.println(volume);
+//}
 
-void seekerCallback(void *ptr) {
-  NexSlider *slider = (NexSlider *) ptr;
-  uint32_t seekPosition;
-  slider->getValue(&seekPosition);
-//  Serial.print(F("SEEK ="));
-//  Serial.println(seekPosition);
-}
+//void seekerCallback(void *ptr) {
+//  NexSlider *slider = (NexSlider *) ptr;
+//  uint32_t seekPosition;
+//  slider->getValue(&seekPosition);
+////  Serial.print(F("SEEK ="));
+////  Serial.println(seekPosition);
+//}
 
-void gammaCallback(void *ptr) {
-  NexCheckbox *checkbox = (NexCheckbox *) ptr;
-  uint32_t gamma;
-  checkbox->getValue(&gamma);
-  customGamma = (gamma!=0);
-//  Serial.print(F("GAMMA ="));
-//  Serial.println(gamma);
-}
+
 
 void NextionUiSetup(void) {
   nexInit();
-  seekerSlider.attachPop(seekerCallback, &seekerSlider);
-  brightnessSlider.attachPop(brightnessCallback, &brightnessSlider);
-  contrastSlider.attachPop(contrastCallback, &contrastSlider);
-  volumeSlider.attachPop(volumeCallback, &volumeSlider);
-  gammaCheckbox.attachPop(gammaCallback, &gammaCheckbox);
-  stopButton.attachPop(stopButtonCallback, &stopButton);
 }
 
+int phase = 0;
+long lastSeconds = 0;
+
 void NextionUiLoop(void) {
-  nexLoop(nex_Listen_List);
+
+  uint32_t value;
+
+  switch (phase++) {
+    case 0:
+      if (gammaCheckbox.getValue(&value))
+        customGamma = (value!=0);
+      break;
+    case 1:  
+      if (brightnessSlider.getValue(&value))
+        customBrightness = (int)(256.*(value-128.)/128.);
+      break;
+    case 2:
+      if (contrastSlider.getValue(&value))
+        customContrast2 = value << 1;
+      break;
+    default:
+      phase = 0;
+      break;
+  }
+  
+  // Adjust the seekbar position to the current playback position
+  long seekPosition = 256*(double)playbackAbsolute/(double)videoSampleLength;
+  if (seekPosition != lastSeekPosition) {
+    seekerSlider.setValue(seekPosition);
+    lastSeekPosition = seekPosition;
+  }
+
+  // Display elapsed time in format MM:SS
+  long seconds = playbackAbsolute / singleFrame / 12.5;
+  if (seconds != lastSeconds) {
+    lastSeconds = seconds;
+
+    int s = seconds % 60;
+    int m = seconds / 60;
+  
+    char times[6];
+    times[0] = '0'+m/10;
+    times[1] = '0'+m%10;
+    times[2] = ':';
+    times[3] = '0'+s/10;
+    times[4] = '0'+s%10;
+    times[5] = 0;
+
+    timePos.setText(times);
+  }
 }
 
 #endif

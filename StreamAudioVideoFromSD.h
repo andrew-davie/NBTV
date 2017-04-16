@@ -9,13 +9,9 @@
   SdFat nbtvSD;
 #endif
 
-class StreamAudioVideoFromSD {
-
-public:
-  StreamAudioVideoFromSD();
-  boolean wavInfo(char* filename);
-  void play(char* filename, unsigned long seekPoint=0);
-};
+void setupStreamAudioVideoFromSD();
+boolean wavInfo(char* filename);
+void play(char* filename, unsigned long seekPoint=0);
 
 #endif
 
