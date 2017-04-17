@@ -5,6 +5,22 @@
 // program by Andrew Davie (andrew@taswegian.com), March 2017                                       //
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// LIBRARIES...
+
+// Uses the Nextion Library at https://github.com/itead/ITEADLIB_Arduino_Nextion
+// backup at http://www.taswegian.com/ITEADLIB_Arduino_Nextion-master.zip
+// 1: see: http://support.iteadstudio.com/support/discussions/topics/11000012238
+//    --> Delete NexUpload.h and NexUpload.cpp from Nextion library folder
+// 2. Disable DEBUG_SERIAL_ENABLE in NexConfig.h
+// 3. set   #define nexSerial Serial1 in NexConfig.h
+
+// Uses the SdFat Library at https://github.com/greiman/SdFat
+// backup at http://www.taswegian.com/SdFat-master.zip
+
+// HARDWARE...
+// Arduino pinout/connections:  https://www.taswegian.com/NBTV/forum/viewtopic.php?f=28&t=2298
+
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // COMPILATION SWITCHES...
 
@@ -129,11 +145,9 @@ void setup() {
 
 
 void loop() {
-
 #ifdef NEXTION
   NextionUiLoop();
 #endif
-
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -150,13 +164,10 @@ void setupMotorPWM() {
   
   digitalWrite( PIN_MOTOR, LOW );
   
-  // The timer runs as a normal PWM with two outputs - one for the motor and one for the LED
+  // The timer runs as a normal PWM with two outputs but we just use one for the motor
   // The prescalar is set to /1, giving a frequency of 16000000/256 = 62500 Hz
   // The motor will run off PIN 3 ("MOTOR_DUTY")
-  // The LED will run off PIN 11 ("LED_DUTY")  <<< NOT. LED runs from 
-
-  // see pp.133 ATmega32U4 data sheet for WGM table
-  // %101 = fast PWM, 8-bit
+  // see pp.133 ATmega32U4 data sheet for WGM table.  %101 = fast PWM, 8-bit
   
   TCCR0A = 0
           | bit(COM0A1)           // COM %10 = non-inverted
@@ -258,15 +269,11 @@ ISR(ANALOG_COMP_vect) {
 
 #ifdef NEXTION
 
-// 0: URL: https://github.com/itead/ITEADLIB_Arduino_Nextion
-// 1: RAM/Memory usage - linker problem? see: http://support.iteadstudio.com/support/discussions/topics/11000012238
-//    --> Delete NexUpload.h and NexUpload.cpp from Nextion library folder
-// 2. Disable DEBUG_SERIAL_ENABLE in NexConfig.h
-// 3. set   #define nexSerial Serial1 in NexConfig.h
-
 void NextionUiLoop(void) {
 
   uint32_t value;
+
+  // Cycle through reading the controls only doing one of them each loop. Designed to reduce CPU load.
 
   switch (phase++) {
     case 0:
@@ -522,7 +529,7 @@ boolean wavInfo(char* filename) {
 void play(char* filename, unsigned long seekPoint) {
 
 #ifdef SDX
-  //stopPlayback();
+
   if (!wavInfo(filename))
       return;
   
@@ -550,7 +557,7 @@ void play(char* filename, unsigned long seekPoint) {
   ICR3 = (int)((16000000. / sampleRate)+0.5);         // playback frequency
   TCCR3A = _BV(WGM31) | _BV(COM3A1);
   TCCR3B = _BV(WGM33) | _BV(WGM32) | _BV(CS30);       // see pp.133 ATmega32U4 manual for table
-  TIMSK3 |= (_BV(ICIE3) | _BV(TOIE3));            //WGM = 1110 --> FAST PWM with TOP in ICR :)
+  TIMSK3 |= (_BV(ICIE3) | _BV(TOIE3));                //WGM = 1110 --> FAST PWM with TOP in ICR :)
   
   interrupts();
 #endif
@@ -560,9 +567,13 @@ void play(char* filename, unsigned long seekPoint) {
 // Buffer stuffer interrupt
 // Operates at the frequency of the WAV file data (i.e, 19200Hz for NBTV8 format)
 // This code tries to fill up the unused part(s) of the circular buffer that contains the streaming
-// audio & video from the WAV file being played. There are two pointers; 'streamPointer' which is the
-// beginning of the buffer to which data can be written, and 'playbackPointer' which is the interrupt's
-// current pointer to the sample to play. Note that 'playbackPointer' can (and will!) change while this
+// audio & video from the WAV file being played. 'bufferOffset' is the location of the next buffer
+// write, and this wraps when it gets to the end of the buffer. The number of bytes to write is
+// calculated from two playback pointers - 'playbackAbsolute' which is the current position in the
+// audio/video stream that's ACTUALLY being shown/heard, and 'streamAbsolute' which is the position
+// of the actually streamed data (less 1 actual buffer length, as it's pre-read at the start). Those
+// give us a way to calculate the amount of free bytes ('bytesToStream') which need to be filled by
+// reading data from the SD card. Note that 'playbackPointer' can (and will!) change while this
 // routine is streaming data from the SD.  The hope is that we can read data from the SD to the buffer
 // fast enough to keep the interrupt happy. If we can't - then we get glitches on the screen/audio
 
@@ -571,11 +582,11 @@ ISR(TIMER3_CAPT_vect) {
   
   if (!alreadyStreaming) {
     alreadyStreaming = true;    // prevent THIS interrupt from interrupting itself...
-    interrupts();               // but allow other interrupts while this one is running
-
+    interrupts();               // but allow other interrupts (the audio/video write)
+    
     unsigned int bytesToStream = playbackAbsolute - streamAbsolute;
-    if (bytesToStream > 64) {                                   // theory: more efficient to do bigger blocks less frequently
-      bytesToStream = 64;
+    if (bytesToStream > 64) {                     // theory: more efficient to do bigger blocks
+      bytesToStream = 64;                         // TODO: BUG! Remove this: no picture!! ???
       
       void *dest = (void *)(circularAudioVideoBuffer + bufferOffset);
       bufferOffset += bytesToStream;
@@ -592,6 +603,7 @@ ISR(TIMER3_CAPT_vect) {
 
 #endif
 }
+
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // Data playback interrupt
@@ -643,20 +655,15 @@ ISR(TIMER3_OVF_vect) {
   DDRC |= 1<<7;                       // Set Output Mode C7
   TCCR4A = 0x82;                      // Activate channel A
 
-  if (audio < 0)
-    audio = 0;
-  else if (audio > 255)
+
+  if (audio > 255)
     audio = 255;
 
-  OCR4D = (byte) audio;
+  OCR4D = (byte) audio;               // Write the audio to pin 6 PWM duty cycle
   DDRD |= 1<<7;
   TCCR4C |= 0x09;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // EOF
-
-
-
-
 
