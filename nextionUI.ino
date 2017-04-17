@@ -25,6 +25,7 @@
 extern int customBrightness;        // 0 = normal
 extern long customContrast2;       // binary fraction 128 = 1.0 = normal
 extern boolean customGamma;         // true = use gamma lookup table
+extern long customVolume;
 
 extern unsigned long videoSampleLength;
 uint32_t lastSeekPosition = 0;
@@ -89,13 +90,18 @@ void NextionUiLoop(void) {
       if (contrastSlider.getValue(&value))
         customContrast2 = value << 1;
       break;
+    case 3:
+      if (volumeSlider.getValue(&value))
+        customVolume = value << 1;
+      break;
+        
     default:
       phase = 0;
       break;
   }
   
   // Adjust the seekbar position to the current playback position
-  long seekPosition = 256*(double)playbackAbsolute/(double)videoSampleLength;
+  uint32_t seekPosition = 256*(double)playbackAbsolute/(double)videoSampleLength;
   if (seekPosition != lastSeekPosition) {
     seekerSlider.setValue(seekPosition);
     lastSeekPosition = seekPosition;

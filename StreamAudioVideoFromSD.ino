@@ -38,7 +38,7 @@ const uint8_t PROGMEM gamma8[] = {
 
 void setupStreamAudioVideoFromSD() {
 
-//  pinMode(PIN_AUDIO, OUTPUT);     // speakerPin  -- TODO  (will be pin 10)
+  //pinMode(PIN_AUDIO, OUTPUT);     // speakerPin  -- TODO  (will be pin 10)
 
   // SD card initialisation
   
@@ -166,7 +166,7 @@ boolean wavInfo(char* filename) {
           Serial.print(F("align: "));
           Serial.println(blockAlign);
         #endif
-        nbtv.read(&bitsPerSample,2);
+        nbtv.read((void *)&bitsPerSample,2);
         #ifdef SHOW_WAV_STATS
           Serial.print(F("bps: "));
           Serial.println(bitsPerSample);
@@ -226,10 +226,7 @@ void play(char* filename, unsigned long seekPoint) {
       Serial.print("Seek to ");
       Serial.println(seekTo);
     #endif
-    
-    for (long i = 0; i < seekTo; i++)
-      nbtv.read(circularAudioVideoBuffer, 1);
-    //nbtv.seek( seekTo );
+    nbtv.seek( seekTo );
   }
 
   playbackAbsolute = 0;
@@ -237,7 +234,7 @@ void play(char* filename, unsigned long seekPoint) {
   pbp = 0;
   bufferOffset = 0;
   
-  nbtv.read( circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE );      // pre-fill the circular buffer so it's valid
+  nbtv.read( (void *)circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE );      // pre-fill the circular buffer so it's valid
  
   noInterrupts();
   
@@ -274,7 +271,7 @@ ISR(TIMER3_CAPT_vect) {
       if (bytesToStream > 64) {                                   // theory: more efficient to do bigger blocks less frequently
         bytesToStream = 64;
         
-        byte *dest = circularAudioVideoBuffer + bufferOffset;
+        void *dest = (void *)(circularAudioVideoBuffer + bufferOffset);
         bufferOffset += bytesToStream;
         if ( bufferOffset >= CIRCULAR_BUFFER_SIZE ) {
           bytesToStream = CIRCULAR_BUFFER_SIZE - bufferOffset + bytesToStream;
@@ -297,11 +294,17 @@ ISR(TIMER3_CAPT_vect) {
 int customBrightness = 0;
 boolean customGamma = true;
 long customContrast2 = 256;      // a X.Y fractional  (8 bit fractions) so 256 = 1.0f   and 512 = 2.0f
+long customVolume = 256;        //ditto
 
 ISR(TIMER3_OVF_vect) {
 
+  long audio;
   long bright;
   if (bitsPerSample==16) {
+
+    audio = *(int *)(circularAudioVideoBuffer+pbp+2) * customVolume;
+    audio >>= 16;
+    
     
     bright = *(int *)(circularAudioVideoBuffer+pbp) * customContrast2;
     bright >>= 14;
@@ -310,6 +313,9 @@ ISR(TIMER3_OVF_vect) {
     pbp += 4;
     
   } else { // assume 8-bit, NBTV WAV file format
+
+    audio = circularAudioVideoBuffer[pbp+1] * customVolume;
+    audio >>= 8;
 
     bright = circularAudioVideoBuffer[pbp] * customContrast2;
     bright >>= 8;
@@ -332,6 +338,15 @@ ISR(TIMER3_OVF_vect) {
   OCR4A = customGamma ? pgm_read_byte(&gamma8[bright]) : (byte)bright;
   DDRC |= 1<<7;                       // Set Output Mode C7
   TCCR4A = 0x82;                      // Activate channel A
+
+  if (audio < 0)
+    audio = 0;
+  else if (audio > 255)
+    audio = 255;
+
+  OCR4D = (byte) audio;
+  DDRD |= 1<<7;
+  TCCR4C |= 0x09;
 }
 
 

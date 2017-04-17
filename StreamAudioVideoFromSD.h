@@ -2,9 +2,9 @@
 #ifndef StreamAudioVideoFromSD_h
 #define StreamAudioVideoFromSD_h
 
-#include <SdFat.h>
 
 #ifdef SDX
+#include <SdFat.h>
   File nbtv;
   SdFat nbtvSD;
 #endif

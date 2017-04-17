@@ -7,7 +7,7 @@
 #include "pidv2.h"
 
 volatile double PID_desiredError, PID_motorDuty, PID_currentError;
-PID rpmPID(&PID_currentError, &PID_motorDuty, &PID_desiredError,-1,0,0,DIRECT);
+PID rpmPID((double *)&PID_currentError, (double *)&PID_motorDuty, (double *)&PID_desiredError,-1,0,0,DIRECT);
 
 //------------------------------------------------------------------------------------------------------
 
@@ -38,7 +38,7 @@ void setup() {
 //  play("36b.nbtv8.wav");
 //  play("40.nbtv8.wav");
 //  play("45.nbtv8.wav");
-  play("who.nbtv8.wav");
+  play((char *)"who.nbtv8.wav");
 //  play("22050c.wav");
   
 //  wav.play("whoclip4.wav");
@@ -51,18 +51,15 @@ void setup() {
 
 void loop() {
 
-  Serial.println("loop");
-  
   #ifdef NEXTION
     NextionUiLoop();
   #endif
 
   extern volatile boolean IR;
-//  if (IR) {
+  if (IR) {
     IR = false;
-
-    extern boolean alreadyStreaming;
-    Serial.println(alreadyStreaming);
-//  }
+//    extern boolean alreadyStreaming;
+//    Serial.println(alreadyStreaming);
+  }
 }
 
