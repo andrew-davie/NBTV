@@ -32,6 +32,7 @@
 #define NEXTION                   // include Nextion LCD functionality
 #define SDX                       // include SD card functionality
 #define SHOW_WAV_STATS            // show the WAV file header details as it is loaded
+#define PID                       // enable PID code
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // CONFIGURATION...
@@ -75,7 +76,7 @@ NexText timePos = NexText(0, 9, "timePos");
 int customBrightness = 0;
 boolean customGamma = true;
 long customContrast2 = 256;      // a X.Y fractional  (8 bit fractions) so 256 = 1.0f   and 512 = 2.0f
-long customVolume = 256;        //ditto
+long customVolume = 256;         // ditto
 
 
 volatile byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
@@ -83,16 +84,14 @@ volatile unsigned int bitsPerSample;
 volatile unsigned long playbackAbsolute;
 volatile unsigned int pbp = 0;
 
-unsigned long videoSampleLength;
+unsigned long videoLength;
 volatile unsigned long streamAbsolute;
 volatile unsigned int bufferOffset = 0;
 unsigned long sampleRate;
-long singleFrame;
+unsigned long singleFrame;
 
 volatile unsigned long timeDiff = 0;
 volatile unsigned long lastDetectedIR = 0;
-volatile boolean IR = false;
-volatile long desiredTime = 0;
 
 boolean alreadyStreaming = false;
 
@@ -100,9 +99,41 @@ boolean alreadyStreaming = false;
 // PID...
 
 #ifdef PID
-#include "pidv2.h"
-volatile double PID_desiredError, PID_motorDuty, PID_currentError;
-PID rpmPID((double *)&PID_currentError, (double *)&PID_motorDuty, (double *)&PID_desiredError,-1,0,0,DIRECT);
+
+// PID (from http://brettbeauregard.com/blog/2011/04/improving-the-beginners-pid-introduction/)
+
+double lastTime = 0;
+double Input, Output, Setpoint;
+double errSum, lastErr;
+double kp, ki, kd;
+
+void Compute() {
+
+  double now = ((double)playbackAbsolute) / singleFrame;
+  double timeChange = (double)(now - lastTime);
+  if (timeChange > 0) {
+    
+    double error = Setpoint - Input;
+    errSum += (error * timeChange);
+    double dErr = (error - lastErr) / timeChange;
+    Output = kp * error + ki * errSum + kd * dErr;
+  
+    if (Output > 255)
+      Output = 255;
+    if (Output < 0)
+      Output = 0;
+    
+    lastErr = error;
+    lastTime = now;
+  }
+}
+  
+void SetTunings(double Kp, double Ki, double Kd) {
+   kp = Kp;
+   ki = Ki;
+   kd = Kd;
+}
+
 #endif
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -117,6 +148,8 @@ void play(char* filename, unsigned long seekPoint=0);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // The Arduino calls setup() once, and then loop() repeatedly
+
+int startupPhase = 0;
 
 void setup() {
 
@@ -137,10 +170,14 @@ void setup() {
   setupStreamAudioVideoFromSD();
   
 #ifdef PID
-  setupPID();
+    SetTunings(1.5,0.5,1);
+//  SetTunings(1.5,0.25,0.5);
+//  SetTunings(2,0.1,1);      // quite good
 #endif
 
   play((char *)"who.nbtv8.wav");
+//  play((char *)"who.nbtv8.wav");
+//  play((char *)"porridgeX.nbtv8.wav");
 }
 
 
@@ -148,6 +185,11 @@ void loop() {
 #ifdef NEXTION
   NextionUiLoop();
 #endif
+
+  if (startupPhase == 1) {
+    startupPhase++;
+  }
+
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -185,20 +227,7 @@ void setupMotorPWM() {
   OCR0B = 255;           // start motor spinning so PID can kick in in interrupt
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-// PID to adjust motor speed
 
-#ifdef PID
-void setupPID() {
-  
-  PID_currentError = 0;
-  PID_desiredError = 0; //singleFrame;
-  PID_motorDuty = 255;                // maximum duty to kick-start motor and get IR fired up
-  
-  rpmPID.SetOutputLimits(0, 75);
-  rpmPID.SetMode(AUTOMATIC);              // turn on PID
-}
-#endif
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // Super dooper high speed PWM (187.5 kHz) using timer 4, used for the LED (pin 13) and audio (pin 6).
@@ -249,18 +278,36 @@ ISR(ANALOG_COMP_vect) {
   if (deltaSample > 1000) {         // cater for potential "bounce" on IR detect by not accepting closely spaced signals
     lastDetectedIR = timeDiff;
 
-    desiredTime += singleFrame;
-
     interrupts();
 
-    IR = true;
-
 #ifdef PID
-    PID_currentError = deltaSample;    
-    rpmPID.Compute();
-#endif
+
+    Setpoint = 0;
+    Input = singleFrame-deltaSample;
+
+    if (!startupPhase && Input > -90) {
+      Serial.println("switch");
+      startupPhase++;
+    }
     
-    OCR0B = 47; //(byte)(PID_motorDuty+0.5);        // write motor PWM duty
+    if (startupPhase) {
+      Compute();          // PID
+      OCR0B = (byte)(Output+0.5);        // write motor PWM duty
+    }
+#else
+    OCR0B = 53;
+#endif
+
+
+    // Now we are at the very start of a frame, so to get synchrnoisation we can adjust the playback offset
+    // so that the video/audio is ALSO at the start of a frame.  Depending on the delta we might move
+    // the playback pointer earlier or later. Mmh.
+
+    // The playback TIME should be pretty much sacrosanct, but we fine-adjust.
+    // So have a bit of 'leeway" with 0 being bang-on, but we can 'drift' a bit + or -
+
+    
+
   }
 }
 
@@ -299,7 +346,7 @@ void NextionUiLoop(void) {
   }
   
   // Adjust the seekbar position to the current playback position
-  uint32_t seekPosition = 256*(double)playbackAbsolute/(double)videoSampleLength;
+  uint32_t seekPosition = (playbackAbsolute << 8) / videoLength;      //256*(double)playbackAbsolute/(double)videoLength;
   if (seekPosition != lastSeekPosition) {
     seekerSlider.setValue(seekPosition);
     lastSeekPosition = seekPosition;
@@ -496,10 +543,10 @@ boolean wavInfo(char* filename) {
         Serial.println(F("data chunk"));
       #endif
       
-      nbtv.read(&videoSampleLength,4);
+      nbtv.read(&videoLength,4);
       #ifdef SHOW_WAV_STATS
         Serial.print(F("video size: "));
-        Serial.println(videoSampleLength);
+        Serial.println(videoLength);
       #endif
       
       //position = nbtv.position();
@@ -534,7 +581,7 @@ void play(char* filename, unsigned long seekPoint) {
       return;
   
   if (seekPoint) {    //TODO; not working
-    long seekTo = sampleRate * bitsPerSample * 2 * seekPoint / 8 + nbtv.position();
+    long seekTo = singleFrame * seekPoint * 12.5 + nbtv.position();
     #ifdef DEBUG
       Serial.print("Seek to ");
       Serial.println(seekTo);
@@ -665,5 +712,6 @@ ISR(TIMER3_OVF_vect) {
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
+
 // EOF
 
