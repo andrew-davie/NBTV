@@ -60,7 +60,6 @@
 uint32_t lastSeekPosition = 0;
 int phase = 0;
 long lastSeconds = 0;
-boolean stopped = false;
 
 NexSlider seekerSlider = NexSlider(0, 12, "seek");
 NexSlider brightnessSlider = NexSlider(0, 8, "brightness");
@@ -104,13 +103,14 @@ boolean alreadyStreaming = false;
 
 double lastTime = 0;
 double Input, Output, Setpoint;
-double errSum, lastErr;
+double errSum = 0;
+double lastErr;
 double kp, ki, kd;
 
 void Compute() {
 
   double now = ((double)playbackAbsolute) / singleFrame;
-  double timeChange = (double)(now - lastTime);
+  double timeChange = now - lastTime;
   if (timeChange > 0) {
     
     double error = Setpoint - Input;
@@ -271,6 +271,8 @@ void setupIRComparator() {
 //-- Analog comparator interrupt service routine -------------------------------------------------
 // Triggered by sync hole detected by IR sensor, connected to pin 7 (AC)
 
+long pbDelta = 0;
+
 ISR(ANALOG_COMP_vect) {
 
   timeDiff = playbackAbsolute;
@@ -280,6 +282,11 @@ ISR(ANALOG_COMP_vect) {
 
     interrupts();
 
+    pbDelta = playbackAbsolute % singleFrame;
+    Serial.println(pbDelta);
+    if (pbDelta > 45) {
+        lastDetectedIR-= 1;
+    }
 #ifdef PID
 
     Setpoint = 0;
@@ -651,6 +658,22 @@ ISR(TIMER3_CAPT_vect) {
 #endif
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+// Move forward by one sample (used to reposition frame)
+
+void bumpPlayback(long delta) {
+
+  if (bitsPerSample==16) {
+    playbackAbsolute += 4*delta;
+    pbp += 4*delta;
+  } else {
+    playbackAbsolute += 2*delta;
+    pbp += 2*delta;
+  }
+  
+  if (pbp >= CIRCULAR_BUFFER_SIZE)
+    pbp = 0;  
+}
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // Data playback interrupt
@@ -682,10 +705,10 @@ ISR(TIMER3_OVF_vect) {
 
     bright = circularAudioVideoBuffer[pbp] * customContrast2;
     bright >>= 8;
-    
+
     playbackAbsolute += 2;
     pbp += 2;
-    
+
   }
   
   if (pbp >= CIRCULAR_BUFFER_SIZE)
