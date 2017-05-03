@@ -33,11 +33,12 @@
 #define SDX                       // include SD card functionality
 #define SHOW_WAV_STATS            // show the WAV file header details as it is loaded
 #define PID                       // enable PID code
+#define LIST                      // show SD contents
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // CONFIGURATION...
 
-#define CIRCULAR_BUFFER_SIZE 512  // must be a multiple of sample size
+#define CIRCULAR_BUFFER_SIZE 256 //512  // must be a multiple of sample size
                                   // (i.e, (video+audio)*bytes per)) = 4 for 16-bit, and 2 for 8-bit
 
 // Frequency modes for TIMER4
@@ -54,23 +55,47 @@
 
 #include "NexSlider.h"
 #include "NexText.h"
+#include "NexVariable.h"
 #include "NexButton.h"
-#include "NexCheckbox.h"
 
 uint32_t lastSeekPosition = 0;
 int phase = 0;
 long lastSeconds = 0;
 
-NexSlider seekerSlider = NexSlider(0, 12, "seek");
-NexSlider brightnessSlider = NexSlider(0, 8, "brightness");
-NexSlider contrastSlider = NexSlider(0, 10, "contrast");
-NexSlider volumeSlider = NexSlider(0, 11, "volume");
-NexCheckbox gammaCheckbox = NexCheckbox(0, 3, "gamma");
-NexButton stopButton = NexButton(0, 4, "stopButton");
-NexText timePos = NexText(0, 9, "timePos");
+NexSlider seekerSlider = NexSlider(2, 3, "seek");
+NexSlider brightnessSlider = NexSlider(2, 1, "brightness");
+NexSlider contrastSlider = NexSlider(2, 5, "contrast");
+NexSlider volumeSlider = NexSlider(2, 6, "volume");
+NexVariable gammaCheckbox = NexVariable(2, 17, "gamma");
+NexText timePos = NexText(2, 2, "timePos");
+
+NexText t0 = NexText(1, 2, "f0");
+NexText t1 = NexText(1, 3, "f1");
+NexText t2 = NexText(1, 4, "f2");
+NexText t3 = NexText(1, 5, "f3");
+NexText t4 = NexText(1, 6, "f4");
+NexText t5 = NexText(1, 7, "f5");
+NexText t6 = NexText(1, 13, "f6");
+NexText t7 = NexText(1, 14, "f7");
+
+NexText trackName = NexText(2, 4, "trackTitle");
+ 
+NexVariable baseVar = NexVariable(1,14,"basex");
+NexVariable selectedTrack = NexVariable(1,10,"va0");
+NexVariable requestLine = NexVariable(1,15,"req");
+NexSlider trackSlider = NexSlider(1,11,"h0");
+NexButton trackUp = NexButton(1,8,"b0");
+NexButton trackDown = NexButton(1,9,"b1");
+
+NexTouch *nex_listen_list[] = {
+   &trackSlider, &trackUp, &trackDown, NULL
+};
 
 #endif
 //////////////////////////////////////////////////////////////////////////////////////////////////////
+
+int uiMode = 0;
+
 
 int customBrightness = 0;
 boolean customGamma = true;
@@ -102,30 +127,30 @@ boolean alreadyStreaming = false;
 // PID (from http://brettbeauregard.com/blog/2011/04/improving-the-beginners-pid-introduction/)
 
 double lastTime = 0;
-double Input, Output, Setpoint;
 double errSum = 0;
 double lastErr;
 double kp, ki, kd;
+double motorSpeed;
 
-void Compute() {
+byte calculatePID(double error) {
 
   double now = ((double)playbackAbsolute) / singleFrame;
   double timeChange = now - lastTime;
   if (timeChange > 0) {
-    
-    double error = Setpoint - Input;
     errSum += (error * timeChange);
     double dErr = (error - lastErr) / timeChange;
-    Output = kp * error + ki * errSum + kd * dErr;
+    motorSpeed = kp * error + ki * errSum + kd * dErr;
   
-    if (Output > 255)
-      Output = 255;
-    if (Output < 0)
-      Output = 0;
+    if (motorSpeed > 255)
+      motorSpeed = 255;
+    if (motorSpeed < 0)
+      motorSpeed = 0;
     
     lastErr = error;
     lastTime = now;
   }
+
+  return (byte)(motorSpeed+0.5);
 }
   
 void SetTunings(double Kp, double Ki, double Kd) {
@@ -149,7 +174,20 @@ void play(char* filename, unsigned long seekPoint=0);
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // The Arduino calls setup() once, and then loop() repeatedly
 
-int startupPhase = 0;
+
+#ifdef NEXTION
+void trackPopCallback(void *) {
+  Serial.println("callback");
+  uint32_t base;
+  if (baseVar.getValue(&base)) {
+    NexText *t[] = { &t0,&t1,&t2,&t3,&t4,&t5,&t6,&t7 };
+    char nx[64];
+    for (int x=0; x<8; x++)
+      t[x]->setText(composeMenuItem(base+x,sizeof(nx),nx));
+  }
+}
+#endif
+
 
 void setup() {
 
@@ -161,36 +199,132 @@ void setup() {
 #endif
 
 #ifdef NEXTION
-  nexInit();              // Initialise Nextion LCD
+  nexInit();
+  trackSlider.attachPop(trackPopCallback, &trackSlider);
+  trackUp.attachPop(trackPopCallback, &trackUp);
+  trackDown.attachPop(trackPopCallback, &trackDown);
 #endif
-    
-  setupIRComparator();
-  setupMotorPWM();
-  setupFastPwm(PWM187k);
-  setupStreamAudioVideoFromSD();
-  
-#ifdef PID
-    SetTunings(1.5,0.5,1);
-//  SetTunings(1.5,0.25,0.5);
-//  SetTunings(2,0.1,1);      // quite good
-#endif
-
-  play((char *)"who.nbtv8.wav");
-//  play((char *)"who.nbtv8.wav");
-//  play((char *)"porridgeX.nbtv8.wav");
 }
 
+
+
+int countFiles(int s,char *name) {
+  int count=0;
+  FatFile *vwd = nbtvSD.vwd();
+  vwd->rewind();
+  
+  SdFile file;
+  while (file.openNext(vwd, O_READ)) {
+    memset(name,0,s);
+    file.getName(name,s-1);
+    file.close();
+    if (name[0] != 46) {
+      char *px = strstr(name,".WAV");
+      if (!px)
+        px = strstr(name,".wav");
+
+      char *px2 = strstr(name,".nbtv8.wav");
+      if (!px2)
+        px2 = strstr(name,".NVTV8.WAV");
+      if (px) *px = 0;
+      if (px2) *px2 = 0;
+        
+      if (px||px2)
+        count++; 
+    }
+  }
+  return count;
+}
+
+
+
+boolean getFileN(int n,int s, char *name) {
+
+  FatFile *vwd = nbtvSD.vwd();
+  vwd->rewind();
+  SdFile file;
+  while (file.openNext(vwd, O_READ)) {
+    file.getName(name,s-1);
+    file.close();
+    if (name[0] != 46) {
+      char *px = strstr(name,".WAV");
+      if (!px)
+        px = strstr(name,".wav");
+
+      char *px2 = strstr(name,".nbtv8.wav");
+      if (!px2)
+        px2 = strstr(name,".NVTV8.WAV");
+      if (px) *px = 0;
+      if (px2) *px2 = 0;
+        
+      if (px||px2)
+        if (!n--)
+          return true;
+    }
+  }
+  return false;
+}
+
+
+char *composeMenuItem(int item,int s, char *p) {
+    memset(p,0,s);
+    sprintf(p,"%2d ",item+1);
+    if (!getFileN(item,s-3,p+3))
+      *p = 0;
+    return p;
+}
+
+
+uint32_t base = 65535;
 
 void loop() {
-#ifdef NEXTION
-  NextionUiLoop();
+  
+  switch (uiMode) {
+    case 0:
+      setupIRComparator();
+      setupMotorPWM();
+      setupFastPwm(PWM187k);
+      setupStreamAudioVideoFromSD();
+  #ifdef PID
+      SetTunings(1.5,0,0);
 #endif
 
-  if (startupPhase == 1) {
-    startupPhase++;
+      char nx[64];
+      trackSlider.setMaxval(countFiles(sizeof(nx),nx)-8);
+      
+      uiMode++;
+      break;
+
+#define REQUEST_NONE 9
+#define REQUEST_ALL 8
+
+    case 1:
+      nexLoop(nex_listen_list); 
+      break;
+
+    case 2:
+
+#ifdef NEXTION
+      NextionUiLoop();
+#endif
+      // check nextion for STOP
+      break;
+
+    default:
+      break;
+    
   }
+  
 
 }
+
+
+
+
+
+
+
+
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // PWM to control motor speed
@@ -224,7 +358,7 @@ void setupMotorPWM() {
           //| bit(CS00)
           ;
 
-  OCR0B = 255;           // start motor spinning so PID can kick in in interrupt
+  OCR0B = 0;           // start motor spinning so PID can kick in in interrupt
 }
 
 
@@ -248,7 +382,8 @@ void setupFastPwm(int mode) {
   OCR4C = 255;                    // Target count for Timer 4 PWM
 }
 
-//------------------------------------------------------------------------------------------------------
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 // Comparator interrupt for IR sensing
 // precludes timer 1 usage
 
@@ -268,52 +403,80 @@ void setupIRComparator() {
   SREG |= bit(SREG_I);        // GLOBALLY enable interrupts
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 //-- Analog comparator interrupt service routine -------------------------------------------------
 // Triggered by sync hole detected by IR sensor, connected to pin 7 (AC)
 
-long pbDelta = 0;
+int phasePid = 0;
+int pbDelta;
 
 ISR(ANALOG_COMP_vect) {
 
   timeDiff = playbackAbsolute;
+  
   double deltaSample = timeDiff - lastDetectedIR;
   if (deltaSample > 1000) {         // cater for potential "bounce" on IR detect by not accepting closely spaced signals
-    lastDetectedIR = timeDiff;
-
+  
     interrupts();
 
-    pbDelta = playbackAbsolute % singleFrame;
-    Serial.println(pbDelta);
-    if (pbDelta > 45) {
-        lastDetectedIR-= 1;
-    }
-#ifdef PID
+    lastDetectedIR = timeDiff;
 
-    Setpoint = 0;
-    Input = singleFrame-deltaSample;
+     switch (phasePid) {
+  
+        case 0:
 
-    if (!startupPhase && Input > -90) {
-      Serial.println("switch");
-      startupPhase++;
-    }
-    
-    if (startupPhase) {
-      Compute();          // PID
-      OCR0B = (byte)(Output+0.5);        // write motor PWM duty
-    }
-#else
-    OCR0B = 53;
-#endif
+          // Phase 0 is the beginning - if the disc is stopped, then this runs the motor at full-speed until the rotation
+          // is 'nearly right' - taking into account the physical characteristics of the drive chain.  This will vary
+          // from televisor to televisor. What we want to do is have the disc as close to possible to correct speed
+          // AND not accellerating when we switch to the PID.
 
+          if (deltaSample < 3072+100) {
+            SetTunings(1.5,.35,1);                    // The PID that does the regular synching
+            phasePid++;
+            lastTime =  ((double)playbackAbsolute) / singleFrame;
+          }
+          break;
+        
+        case 1:    
 
-    // Now we are at the very start of a frame, so to get synchrnoisation we can adjust the playback offset
-    // so that the video/audio is ALSO at the start of a frame.  Depending on the delta we might move
-    // the playback pointer earlier or later. Mmh.
-
-    // The playback TIME should be pretty much sacrosanct, but we fine-adjust.
-    // So have a bit of 'leeway" with 0 being bang-on, but we can 'drift' a bit + or -
-
-    
+//          Serial.println(deltaSample);
+          
+          // This next bit is super cool.  The PID synchronises the disc speed to 12.5 Hz (indirectly through the singleFrame
+          // value, which is a count of #samples per rotation at 12.5 Hz).  Since the disc and the playback of the video
+          // are supposed to be exactly in synch, we know that both SHOULD start a frame/rotation at exactly the same time.
+          // So since we know we're at the start of a rotation (we just detected the synch hole), then we can compare
+          // how 'out of phase' the video is by simply looking at the video playback sample # ('plabackAbsolute') and
+          // use the sub-frame offset as an indicator of how inaccurate the framing is.  Once we know that, instead of
+          // trying to change the video timing, we just change the disc speed. How do we do that?  By tricking the PID
+          // into thinking the disc is running faster than it really is by telling it that the time between now and
+          // the last detected rotation is actually shorter than measured. A consequence of this is that the PID will try
+          // to slow the disc down a fraction, which will in turn mean the video is playing slightly faster relative
+          // to the timing of the disc, and the image will shift up and left.  We also (gosh this is elegant) get the
+          // ability to shift the image up/down.  So we can hardwire the exact framing vertical of the displayed image,
+          // too.
+      
+          pbDelta = timeDiff % singleFrame;   // how inaccurate is framing?
+          if (pbDelta > 65) {                               // if we need to 'vertically' adjust (OR horizontally)
+      
+              // Note, the harwred number is televisor-specific. This is just the vertical framing counter, and can be increased
+              // or decreased to shift the framing up or down.
+            
+              int adjust = (pbDelta - 55 ) / 8 + 1;         // use how far out of wonk as a speed control
+              if (adjust > 64)                              // but cap it because otherwise we overwhelm the PID
+                adjust = 64;
+              lastDetectedIR -= adjust;                     // trick the PID into thinking the disc is fast
+          }
+      
+  #ifdef PID 
+          OCR0B = calculatePID(deltaSample-singleFrame);    // write the new motor PID speed
+  #else
+          OCR0B = 53;
+  #endif
+          break;
+  
+        default:
+          break;
+      }
 
   }
 }
@@ -325,59 +488,77 @@ ISR(ANALOG_COMP_vect) {
 
 void NextionUiLoop(void) {
 
-  uint32_t value;
+  nexLoop(nex_listen_list); 
 
-  // Cycle through reading the controls only doing one of them each loop. Designed to reduce CPU load.
 
-  switch (phase++) {
-    case 0:
-      if (gammaCheckbox.getValue(&value))
-        customGamma = (value!=0);
-      break;
-    case 1:  
-      if (brightnessSlider.getValue(&value))
-        customBrightness = (int)(256.*(value-128.)/128.);
-      break;
-    case 2:
-      if (contrastSlider.getValue(&value))
-        customContrast2 = value << 1;
-      break;
-    case 3:
-      if (volumeSlider.getValue(&value))
-        customVolume = value << 1;
-      break;
-        
-    default:
-      phase = 0;
-      break;
-  }
-  
-  // Adjust the seekbar position to the current playback position
-  uint32_t seekPosition = (playbackAbsolute << 8) / videoLength;      //256*(double)playbackAbsolute/(double)videoLength;
-  if (seekPosition != lastSeekPosition) {
-    seekerSlider.setValue(seekPosition);
-    lastSeekPosition = seekPosition;
-  }
-
-  // Display elapsed time in format MM:SS
-  long seconds = playbackAbsolute / singleFrame / 12.5;
-  if (seconds != lastSeconds) {
-    lastSeconds = seconds;
-
-    int s = seconds % 60;
-    int m = seconds / 60;
-  
-    char times[6];
-    times[0] = '0'+m/10;
-    times[1] = '0'+m%10;
-    times[2] = ':';
-    times[3] = '0'+s/10;
-    times[4] = '0'+s%10;
-    times[5] = 0;
-
-    timePos.setText(times);
-  }
+//  uint32_t value;
+//
+//  // Cycle through reading the controls only doing one of them each loop. Designed to reduce CPU load.
+//
+//  switch (phase++) {
+//    case 0:
+//      if (gammaCheckbox.getValue(&value))
+//        customGamma = (value!=0);
+//      break;
+//    case 1:  
+//      if (brightnessSlider.getValue(&value))
+//        customBrightness = (int)(256.*(value-128.)/128.);
+//      break;
+//    case 2:
+//      if (contrastSlider.getValue(&value))
+//        customContrast2 = value << 1;
+//      break;
+//    case 3:
+//      if (volumeSlider.getValue(&value))
+//        customVolume = value << 1;
+//      break;
+//
+//    case 4:
+////      t0.setText("DOCTOR WHO 3.01");
+////      t1.setText("BETY BOLTON");
+////      t2.setText("PORRIDGE");
+////      t3.setText("TEST CARD #24");
+////      t4.setText("MARCUS GAINES #2");
+////      t5.setText("McLEAN #7");
+//      trackName.setText("~1930 Betty Bolton");
+//
+//      
+//      break;
+//      
+//        
+//    default:
+//      phase = 0;
+//      break;
+//  }
+//  
+//  // Adjust the seekbar position to the current playback position
+//  uint32_t seekPosition = (playbackAbsolute << 8) / videoLength;      //256*(double)playbackAbsolute/(double)videoLength;
+//  if (seekPosition != lastSeekPosition) {
+//    seekerSlider.setValue(seekPosition);
+//    lastSeekPosition = seekPosition;
+//  }
+//
+//  // Display elapsed time in format MM:SS
+//  long seconds = playbackAbsolute / singleFrame / 12.5;
+//  if (seconds != lastSeconds) {
+//    lastSeconds = seconds;
+//
+//    int s = seconds % 60;
+//    int m = seconds / 60;
+//  
+//    char times[6];
+//    times[0] = '0'+m/10;
+//    times[1] = '0'+m%10;
+//    times[2] = ':';
+//    times[3] = '0'+s/10;
+//    times[4] = '0'+s%10;
+//    times[5] = 0;
+//
+//    timePos.setText(times);
+//  }
 }
+
+
 
 #endif
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -656,23 +837,6 @@ ISR(TIMER3_CAPT_vect) {
   }
 
 #endif
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-// Move forward by one sample (used to reposition frame)
-
-void bumpPlayback(long delta) {
-
-  if (bitsPerSample==16) {
-    playbackAbsolute += 4*delta;
-    pbp += 4*delta;
-  } else {
-    playbackAbsolute += 2*delta;
-    pbp += 2*delta;
-  }
-  
-  if (pbp >= CIRCULAR_BUFFER_SIZE)
-    pbp = 0;  
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
