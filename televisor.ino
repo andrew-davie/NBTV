@@ -31,9 +31,12 @@
 #define DEBUG                     // diagnostics to serial terminal (WARNING: busy-waits)
 #define NEXTION                   // include Nextion LCD functionality
 #define SDX                       // include SD card functionality
-#define SHOW_WAV_STATS            // show the WAV file header details as it is loaded
 #define PID                       // enable PID code
 #define LIST                      // show SD contents
+
+#ifdef DEBUG
+//#define SHOW_WAV_STATS            // show the WAV file header details as it is loaded
+#endif
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // CONFIGURATION...
@@ -50,6 +53,7 @@
 #define PWM6k   6   //   5859 Hz
 #define PWM3k   7   //   2930 Hz
 
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 #ifdef NEXTION
 
@@ -57,44 +61,59 @@
 #include "NexText.h"
 #include "NexVariable.h"
 #include "NexButton.h"
+#include "NexDualStateButton.h"
 
 uint32_t lastSeekPosition = 0;
 int phase = 0;
 long lastSeconds = 0;
 
+// Page 2 - The control menu
 NexSlider seekerSlider = NexSlider(2, 3, "seek");
 NexSlider brightnessSlider = NexSlider(2, 1, "brightness");
 NexSlider contrastSlider = NexSlider(2, 5, "contrast");
 NexSlider volumeSlider = NexSlider(2, 6, "volume");
-NexVariable gammaCheckbox = NexVariable(2, 17, "gamma");
+NexDSButton gamma = NexDSButton(2, 15, "gamma");
 NexText timePos = NexText(2, 2, "timePos");
-
-NexText t0 = NexText(1, 2, "f0");
-NexText t1 = NexText(1, 3, "f1");
-NexText t2 = NexText(1, 4, "f2");
-NexText t3 = NexText(1, 5, "f3");
-NexText t4 = NexText(1, 6, "f4");
-NexText t5 = NexText(1, 7, "f5");
-NexText t6 = NexText(1, 13, "f6");
-NexText t7 = NexText(1, 14, "f7");
-
 NexText trackName = NexText(2, 4, "trackTitle");
- 
-NexVariable baseVar = NexVariable(1,14,"basex");
-NexVariable selectedTrack = NexVariable(1,10,"va0");
-NexVariable requestLine = NexVariable(1,15,"req");
-NexSlider trackSlider = NexSlider(1,11,"h0");
-NexButton trackUp = NexButton(1,8,"b0");
-NexButton trackDown = NexButton(1,9,"b1");
+NexButton closeButton = NexButton(2, 16, "closeButton");
 
-NexTouch *nex_listen_list[] = {
-   &trackSlider, &trackUp, &trackDown, NULL
+// Page 1 - The file selection dialog
+NexButton t0 = NexButton(1, 1, "f0");
+NexButton t1 = NexButton(1, 2, "f1");
+NexButton t2 = NexButton(1, 3, "f2");
+NexButton t3 = NexButton(1, 4, "f3");
+NexButton t4 = NexButton(1, 5, "f4");
+NexButton t5 = NexButton(1, 6, "f5");
+NexButton t6 = NexButton(1, 12, "f6");
+NexButton t7 = NexButton(1, 13, "f7");
+
+NexVariable baseVar = NexVariable(1,14,"basex");
+NexVariable selectedItem = NexVariable(1,10,"selectedItem");
+NexVariable requiredUpdate = NexVariable(1,15,"requiredUpdate");
+NexSlider trackSlider = NexSlider(1,11,"h0");
+
+NexTouch *menuList[] = {
+  // Warning: overloaded usage - t0-t7 MUST BE FIRST!
+  &t0, &t1, &t2, &t3, &t4, &t5, &t6, &t7, &trackSlider, NULL
+};
+
+NexTouch *controlListen[] = {
+  &seekerSlider, &brightnessSlider, &contrastSlider, &volumeSlider, &gamma, &closeButton,
+  NULL
 };
 
 #endif
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int uiMode = 0;
+
+#define MODE_INIT 0
+#define MODE_SELECT_TRACK 1
+#define MODE_PLAY 2
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 
 int customBrightness = 0;
@@ -170,22 +189,189 @@ SdFat nbtvSD;
 
 
 void play(char* filename, unsigned long seekPoint=0);
+boolean getFileN(int n,int s, char *name, boolean strip);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // The Arduino calls setup() once, and then loop() repeatedly
 
 
 #ifdef NEXTION
-void trackPopCallback(void *) {
-  Serial.println("callback");
-  uint32_t base;
-  if (baseVar.getValue(&base)) {
-    NexText *t[] = { &t0,&t1,&t2,&t3,&t4,&t5,&t6,&t7 };
-    char nx[64];
-    for (int x=0; x<8; x++)
-      t[x]->setText(composeMenuItem(base+x,sizeof(nx),nx));
+
+// The callback "happens" when there is a change in the scroll position of the dialog.  This
+// means that we need to update one or all of the 8 text lines with new contents. When the up
+// or down arrows are pressed, the Nextion automatically does the scrolling up/down for the
+// lines that are visible on the screen already, and we only need to update the top (0 for up)
+// or the bottom (7 for down) line.  However, if the slider was used, we have to update all
+// of the lines (8) - so this is somewhat slower in updating.  Not too bad though.
+
+#define REFRESH_TOP_LINE 0
+#define REFRESH_BOTTOM_LINE 7
+#define REFRESH_ALL_LINES 8
+
+
+void writeMenuStrings(void * = NULL) {
+
+#ifdef DEBUG
+  Serial.println(F("writeMenuStrings()"));
+#endif
+
+
+  char nx[64];
+  
+  // Ask the Nextion which line(s) require updating.  See the REFRESH_ equates at top of file.
+  uint32_t updateReq;
+  if (!requiredUpdate.getValue(&updateReq)) {
+    Serial.println(F("Warning: Could not read update requirement - defaulting to ALL"));
+    updateReq = REFRESH_ALL_LINES;                       // do all as a fallback  
   }
+  
+  // Get the "base" from the Nextion. This is the index, or starting file # of the first line
+  // in the selection dialog. As we scroll up, this decreases to 0. As we scroll down, it
+  // increases to the maximum file # (held in the slider's max value).
+  
+  uint32_t base;
+  if (!baseVar.getValue(&base)) {
+    Serial.println(F("Error reading base"));
+    base = 0;
+  }    
+
+  Serial.print(F("Base="));
+  Serial.print(base);
+  Serial.print(F(" Update="));
+  Serial.println(updateReq);
+
+  // Based on 'requiredUpdate' from the Nextion we either update only the top line (when up arrow pressed),
+  // only the bottom line (when down arrow pressed), or we update ALL of the lines (slider dragged). The
+  // latter is kind of slow, but that doesn't really matter.  Could switch the serial speed to 115200 bps to
+  // make this super-quick, but it works just fine at default 9600 bps.
+
+  Serial.println(F("----------"));
+  switch (updateReq) {
+    
+    case REFRESH_TOP_LINE:
+    case REFRESH_BOTTOM_LINE: {
+        if (composeMenuItem(base + updateReq, sizeof(nx), nx)) {
+          Serial.println(nx);
+          ((NexButton *) menuList[updateReq])->setText(nx);
+        }
+      }
+      break;
+
+    case REFRESH_ALL_LINES:
+    default:
+      for (int i=0; i<8; i++) {
+        if (composeMenuItem(base + i, sizeof(nx), nx)) {
+          Serial.println(nx);
+          ((NexButton *) menuList[i])->setText(nx);
+        }
+      }
+      break;      
+  }
+  Serial.println(F("----------"));
 }
+
+
+void trackSelectCallback(void *) {
+
+  // When a menu item is selected, we read the selected item absolute number from the Nextion
+  // and use that to lookup the menu string itself, and display both of them on the serial.
+
+#ifdef DEBUG
+  Serial.println(F("trackSelectCallback()"));
+#endif
+
+  uint32_t selection;
+  if (selectedItem.getValue(&selection)) {
+    Serial.print(F("#"));
+    Serial.print(selection);
+    Serial.print(F(" = "));
+
+    char nx[64];
+    boolean found = getFileN(selection,sizeof(nx),nx, false);
+    if (found) {
+      
+      Serial.println(nx);
+
+      interrupts();
+      play(nx);
+      uiMode = MODE_PLAY;
+      sendCommand("page 2");
+      OCR0B = 255;
+      
+    } else
+      Serial.println("File not found");
+      
+    // set track name on title in UI here
+  } else
+    Serial.println(F("error retrieving selection"));
+}
+
+
+void brightnessCallback(void *) {
+
+//#ifdef DEBUG
+//  Serial.println(F("brightnessCallback()"));
+//#endif
+  
+  uint32_t value;
+  if (brightnessSlider.getValue(&value))
+    customBrightness = (int)(256.*(value-128.)/128.);
+}
+
+void contrastCallback(void *) {
+
+//#ifdef DEBUG
+//  Serial.println(F("contrastCallback()"));
+//#endif
+
+uint32_t value;
+  if (contrastSlider.getValue(&value))
+    customContrast2 = value << 1;
+}
+
+void volumeCallback(void *) {
+
+//#ifdef DEBUG
+//  Serial.println(F("volumeCallback()"));
+//#endif
+
+  uint32_t value;
+  if (volumeSlider.getValue(&value))
+    customVolume = value << 1;
+}
+
+void gammaCallback(void *) {
+
+//#ifdef DEBUG
+//  Serial.println(F("gammaCallback()"));
+//#endif
+  
+  uint32_t value;
+  if (gamma.getValue(&value))
+    customGamma = (value!=0);
+}
+
+void seekerCallback(void *) {
+//      if (seekerSlider.getValue(&value))
+// TODO: modify seek position based on seeker value
+}
+
+void closeButtonCallback(void *) {
+
+#ifdef DEBUG
+  Serial.println(F("closeButtonCallback()"));
+#endif
+
+  sendCommand("page 1");
+//  noInterrupts();
+  OCR0B = 0;        // stop motor
+  uiMode = MODE_SELECT_TRACK;
+  
+}
+
+
+
+
 #endif
 
 
@@ -198,25 +384,78 @@ void setup() {
   Serial.println(F("Televisor Active!"));
 #endif
 
+#ifdef SDX
+  // Setup access to the SD card
+#define SD_CS_PIN 4
+  pinMode(SS, OUTPUT);
+  if (!nbtvSD.begin(SD_CS_PIN)) {
+#ifdef DEBUG
+    Serial.println(F("SD failed!"));
+#endif
+  }
+#endif
+
 #ifdef NEXTION
+
   nexInit();
-  trackSlider.attachPop(trackPopCallback, &trackSlider);
-  trackUp.attachPop(trackPopCallback, &trackUp);
-  trackDown.attachPop(trackPopCallback, &trackDown);
+
+  //////////////////////////////////////////////////////////////////////////////////////////
+  // BUG:  I have no idea why the delay below is needed, but the communication with Nextion
+  // fails if it's not there - specifically, the trackSlider.setMaxValue(...) fails.  This code
+  // has generic communication problems with the Nextion but seemingly ONLY ON STARTUP - 
+  // once the scrolling system is going, everything seems hunky dory.  So, somewhere there's
+  // a mistake by yours truly...
+  
+  delay(1000);
+
+  //
+  //////////////////////////////////////////////////////////////////////////////////////////
+
+  // Attach callbacks - one for the slider, and one each for the selectable lines
+  trackSlider.attachPop(writeMenuStrings, &trackSlider);
+  for (int i=0; i<8; i++)
+    menuList[i]->attachPop(trackSelectCallback, menuList[i]);
+
+  // Count the number of menu items and then set the maximum range for the slider
+  // We subtract 8 from the count because there are 8 lines already visible in the window
+
+  int menuSize = countFiles();
+  if (!trackSlider.setMaxval(menuSize > 8 ? menuSize - 8 : 0))
+    Serial.println(F("Error setting slider maximum!"));
+
+  writeMenuStrings();           // defaults to REFRESH_ALL_LINES, so screen is populated
+
+
+  // Page 2 - controls
+
+  seekerSlider.attachPop(seekerCallback, &seekerSlider);
+  brightnessSlider.attachPop(brightnessCallback, &brightnessSlider);
+  contrastSlider.attachPop(contrastCallback, &contrastSlider);
+  volumeSlider.attachPop(volumeCallback, &volumeSlider);
+  gamma.attachPop(gammaCallback, &gamma);
+  closeButton.attachPop(closeButtonCallback, &closeButton);
+  
 #endif
 }
 
 
 
-int countFiles(int s,char *name) {
+int countFiles() {
+
+  char name[64];
+
+//#ifdef DEBUG
+//  Serial.println(F("Counting files"));
+//#endif
+  
   int count=0;
   FatFile *vwd = nbtvSD.vwd();
   vwd->rewind();
   
   SdFile file;
   while (file.openNext(vwd, O_READ)) {
-    memset(name,0,s);
-    file.getName(name,s-1);
+    memset(name,0,sizeof(name));
+    file.getName(name,sizeof(name)-1);
     file.close();
     if (name[0] != 46) {
       char *px = strstr(name,".WAV");
@@ -238,14 +477,25 @@ int countFiles(int s,char *name) {
 
 
 
-boolean getFileN(int n,int s, char *name) {
+boolean getFileN(int n,int s, char *name, boolean strip = true) {
+
+//#ifdef DEBUG
+//  Serial.print(F("getFileN("));
+//  Serial.print(n);
+//  Serial.println(F(")"));
+//#endif
 
   FatFile *vwd = nbtvSD.vwd();
   vwd->rewind();
+
+  
   SdFile file;
   while (file.openNext(vwd, O_READ)) {
     file.getName(name,s-1);
     file.close();
+//#ifdef DEBUG
+//    Serial.println(name);
+//#endif
     if (name[0] != 46) {
       char *px = strstr(name,".WAV");
       if (!px)
@@ -254,8 +504,11 @@ boolean getFileN(int n,int s, char *name) {
       char *px2 = strstr(name,".nbtv8.wav");
       if (!px2)
         px2 = strstr(name,".NVTV8.WAV");
-      if (px) *px = 0;
-      if (px2) *px2 = 0;
+
+      if (strip) {
+        if (px) *px = 0;
+        if (px2) *px2 = 0;
+      }
         
       if (px||px2)
         if (!n--)
@@ -276,54 +529,6 @@ char *composeMenuItem(int item,int s, char *p) {
 
 
 uint32_t base = 65535;
-
-void loop() {
-  
-  switch (uiMode) {
-    case 0:
-      setupIRComparator();
-      setupMotorPWM();
-      setupFastPwm(PWM187k);
-      setupStreamAudioVideoFromSD();
-  #ifdef PID
-      SetTunings(1.5,0,0);
-#endif
-
-      char nx[64];
-      trackSlider.setMaxval(countFiles(sizeof(nx),nx)-8);
-      
-      uiMode++;
-      break;
-
-#define REQUEST_NONE 9
-#define REQUEST_ALL 8
-
-    case 1:
-      nexLoop(nex_listen_list); 
-      break;
-
-    case 2:
-
-#ifdef NEXTION
-      NextionUiLoop();
-#endif
-      // check nextion for STOP
-      break;
-
-    default:
-      break;
-    
-  }
-  
-
-}
-
-
-
-
-
-
-
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -488,49 +693,7 @@ ISR(ANALOG_COMP_vect) {
 
 void NextionUiLoop(void) {
 
-  nexLoop(nex_listen_list); 
 
-
-//  uint32_t value;
-//
-//  // Cycle through reading the controls only doing one of them each loop. Designed to reduce CPU load.
-//
-//  switch (phase++) {
-//    case 0:
-//      if (gammaCheckbox.getValue(&value))
-//        customGamma = (value!=0);
-//      break;
-//    case 1:  
-//      if (brightnessSlider.getValue(&value))
-//        customBrightness = (int)(256.*(value-128.)/128.);
-//      break;
-//    case 2:
-//      if (contrastSlider.getValue(&value))
-//        customContrast2 = value << 1;
-//      break;
-//    case 3:
-//      if (volumeSlider.getValue(&value))
-//        customVolume = value << 1;
-//      break;
-//
-//    case 4:
-////      t0.setText("DOCTOR WHO 3.01");
-////      t1.setText("BETY BOLTON");
-////      t2.setText("PORRIDGE");
-////      t3.setText("TEST CARD #24");
-////      t4.setText("MARCUS GAINES #2");
-////      t5.setText("McLEAN #7");
-//      trackName.setText("~1930 Betty Bolton");
-//
-//      
-//      break;
-//      
-//        
-//    default:
-//      phase = 0;
-//      break;
-//  }
-//  
 //  // Adjust the seekbar position to the current playback position
 //  uint32_t seekPosition = (playbackAbsolute << 8) / videoLength;      //256*(double)playbackAbsolute/(double)videoLength;
 //  if (seekPosition != lastSeekPosition) {
@@ -588,21 +751,7 @@ const uint8_t PROGMEM gamma8[] = {
   226,228,230,232,234,235,237,239,241,243,245,247,249,251,253,255
   };
 
-void setupStreamAudioVideoFromSD() {
-
-#define SD_CS_PIN 4
-  pinMode(SS, OUTPUT);
-
-#ifdef SDX
-  if (!nbtvSD.begin(SD_CS_PIN)) {
-#ifdef DEBUG
-    Serial.println(F("SD failed!"));
-#endif
-  }
-#endif
   
-}
-
 
 boolean wavInfo(char* filename) {
 
@@ -610,11 +759,11 @@ boolean wavInfo(char* filename) {
 
   nbtv = nbtvSD.open(filename);
   if (!nbtv) {
-    #if defined(DEBUG)
+#if defined(DEBUG)
       Serial.print(F("Error when opening file '"));
       Serial.print(filename);
       Serial.print(F("'"));
-    #endif
+#endif
     return false;
   }
 
@@ -899,6 +1048,47 @@ ISR(TIMER3_OVF_vect) {
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void loop() {
+  
+  switch (uiMode) {
+
+    /////////////////////////////////////////////////////////////////////////////////////////////
+    
+    case MODE_INIT:
+      setupIRComparator();
+      setupMotorPWM();
+      setupFastPwm(PWM187k);
+#ifdef PID
+      SetTunings(1.5,0,0);
+#endif
+      uiMode = MODE_SELECT_TRACK;
+      break;
+
+    /////////////////////////////////////////////////////////////////////////////////////////////
+
+    case MODE_SELECT_TRACK:           // file selection from menu
+#ifdef NEXTION
+      nexLoop(menuList);
+#endif
+      break;
+
+    /////////////////////////////////////////////////////////////////////////////////////////////
+
+    case MODE_PLAY:           // movie is playing
+#ifdef NEXTION
+        nexLoop(controlListen);
+#endif
+      break;
+
+    default:
+      break;
+    
+  }
+  
+
+}
+
 
 // EOF
 
