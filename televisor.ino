@@ -5,6 +5,11 @@
 // program by Andrew Davie (andrew@taswegian.com), March 2017                                       //
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
+//TODO: transition between selection of files - 1st only works, 2nd doesn't.
+
+
+
+
 // LIBRARIES...
 
 // Uses the Nextion Library at https://github.com/itead/ITEADLIB_Arduino_Nextion
@@ -35,7 +40,7 @@
 #define LIST                      // show SD contents
 
 #ifdef DEBUG
-//#define SHOW_WAV_STATS            // show the WAV file header details as it is loaded
+#define SHOW_WAV_STATS            // show the WAV file header details as it is loaded
 #endif
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -62,20 +67,36 @@
 #include "NexVariable.h"
 #include "NexButton.h"
 #include "NexDualStateButton.h"
+#include "NexPicture.h"
+
 
 uint32_t lastSeekPosition = 0;
-int phase = 0;
+//int phase = 0;
 long lastSeconds = 0;
+uint32_t shiftFrame = 55;
+uint32_t selection;             // selected track # from menu
+
+NexVariable storedTrackName = NexVariable(2, 20, "stn");
+
+// Page 3 - the shift dialog
+NexTouch shiftUp = NexTouch(3, 1, "u");
+NexTouch shiftLeft = NexTouch(3, 2, "l");
+NexTouch shiftRight = NexTouch(3, 3, "r");
+NexTouch shiftDown = NexTouch(3, 4, "d");
+NexTouch shiftClose = NexPicture(3, 8, "p");
+NexVariable shiftValue = NexVariable(3, 5, "s");
 
 // Page 2 - The control menu
-NexSlider seekerSlider = NexSlider(2, 3, "seek");
-NexSlider brightnessSlider = NexSlider(2, 1, "brightness");
-NexSlider contrastSlider = NexSlider(2, 5, "contrast");
-NexSlider volumeSlider = NexSlider(2, 6, "volume");
-NexDSButton gamma = NexDSButton(2, 15, "gamma");
-NexText timePos = NexText(2, 2, "timePos");
-NexText trackName = NexText(2, 4, "trackTitle");
-NexButton closeButton = NexButton(2, 16, "closeButton");
+NexSlider seekerSlider = NexSlider(2, 4, "s");
+NexSlider brightnessSlider = NexSlider(2, 2, "b");
+NexSlider contrastSlider = NexSlider(2, 6, "c");
+NexSlider volumeSlider = NexSlider(2, 7, "v");
+NexDSButton gamma = NexDSButton(2, 16, "g");
+NexText timePos = NexText(2, 3, "timePos");
+NexText timeMax = NexText(2, 18, "tmax");
+NexText trackName = NexText(2, 5, "t");
+NexButton closeButton = NexButton(2, 17, "x");
+NexPicture shiftPic = NexPicture(2, 14, "p6");
 
 // Page 1 - The file selection dialog
 NexButton t0 = NexButton(1, 1, "f0");
@@ -86,34 +107,38 @@ NexButton t4 = NexButton(1, 5, "f4");
 NexButton t5 = NexButton(1, 6, "f5");
 NexButton t6 = NexButton(1, 12, "f6");
 NexButton t7 = NexButton(1, 13, "f7");
+NexButton t8 = NexButton(1, 16, "f8");
 
-NexVariable baseVar = NexVariable(1,14,"basex");
-NexVariable selectedItem = NexVariable(1,10,"selectedItem");
-NexVariable requiredUpdate = NexVariable(1,15,"requiredUpdate");
+NexVariable baseVar = NexVariable(1,14,"bx");
+NexVariable selectedItem = NexVariable(1,10,"si");
+NexVariable requiredUpdate = NexVariable(1,15,"ru");
 NexSlider trackSlider = NexSlider(1,11,"h0");
 
 NexTouch *menuList[] = {
-  // Warning: overloaded usage - t0-t7 MUST BE FIRST!
-  &t0, &t1, &t2, &t3, &t4, &t5, &t6, &t7, &trackSlider, NULL
+  // Warning: overloaded usage - t0-t8 MUST BE FIRST!
+  &t0, &t1, &t2, &t3, &t4, &t5, &t6, &t7, &t8, &trackSlider, NULL
 };
 
-NexTouch *controlListen[] = {
-  &seekerSlider, &brightnessSlider, &contrastSlider, &volumeSlider, &gamma, &closeButton,
-  NULL
-};
+// Page 0 - title screen
+NexPicture titleScreen = NexPicture(0, 1, "p0");
+NexTouch *titleList[] = { &titleScreen, NULL };
 
 #endif
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
-int uiMode = 0;
 
+#define MODE_TITLE -1
 #define MODE_INIT 0
 #define MODE_SELECT_TRACK 1
 #define MODE_PLAY 2
+#define MODE_SHIFTER 3
+
+int uiMode = MODE_TITLE;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
+int phasePid = 0;
 
 
 int customBrightness = 0;
@@ -136,7 +161,6 @@ unsigned long singleFrame;
 volatile unsigned long timeDiff = 0;
 volatile unsigned long lastDetectedIR = 0;
 
-boolean alreadyStreaming = false;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // PID...
@@ -150,6 +174,13 @@ double errSum = 0;
 double lastErr;
 double kp, ki, kd;
 double motorSpeed;
+
+void initPid() {
+  phasePid = 0;
+  lastErr = 0;
+  lastTime = 0;
+  errSum = 0;
+}
 
 byte calculatePID(double error) {
 
@@ -192,8 +223,6 @@ void play(char* filename, unsigned long seekPoint=0);
 boolean getFileN(int n,int s, char *name, boolean strip);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
-// The Arduino calls setup() once, and then loop() repeatedly
-
 
 #ifdef NEXTION
 
@@ -205,8 +234,8 @@ boolean getFileN(int n,int s, char *name, boolean strip);
 // of the lines (8) - so this is somewhat slower in updating.  Not too bad though.
 
 #define REFRESH_TOP_LINE 0
-#define REFRESH_BOTTOM_LINE 7
-#define REFRESH_ALL_LINES 8
+#define REFRESH_BOTTOM_LINE 8
+#define REFRESH_ALL_LINES 9
 
 
 void writeMenuStrings(void * = NULL) {
@@ -235,23 +264,30 @@ void writeMenuStrings(void * = NULL) {
     base = 0;
   }    
 
-  Serial.print(F("Base="));
-  Serial.print(base);
-  Serial.print(F(" Update="));
-  Serial.println(updateReq);
-
+  #ifdef DEBUG
+    Serial.print(F("Base="));
+    Serial.print(base);
+    Serial.print(F(" Update="));
+    Serial.println(updateReq);
+  #endif
+  
   // Based on 'requiredUpdate' from the Nextion we either update only the top line (when up arrow pressed),
   // only the bottom line (when down arrow pressed), or we update ALL of the lines (slider dragged). The
   // latter is kind of slow, but that doesn't really matter.  Could switch the serial speed to 115200 bps to
   // make this super-quick, but it works just fine at default 9600 bps.
 
-  Serial.println(F("----------"));
+  #ifdef DEBUG
+    Serial.println(F("----------"));
+  #endif
+  
   switch (updateReq) {
     
     case REFRESH_TOP_LINE:
     case REFRESH_BOTTOM_LINE: {
         if (composeMenuItem(base + updateReq, sizeof(nx), nx)) {
-          Serial.println(nx);
+          #ifdef DEBUG
+            Serial.println(nx);
+          #endif
           ((NexButton *) menuList[updateReq])->setText(nx);
         }
       }
@@ -259,15 +295,40 @@ void writeMenuStrings(void * = NULL) {
 
     case REFRESH_ALL_LINES:
     default:
-      for (int i=0; i<8; i++) {
+      for (int i=0; i<9; i++) {
         if (composeMenuItem(base + i, sizeof(nx), nx)) {
-          Serial.println(nx);
+          #ifdef DEBUG
+            Serial.println(nx);
+          #endif
           ((NexButton *) menuList[i])->setText(nx);
         }
       }
-      break;      
+      break;
   }
-  Serial.println(F("----------"));
+  #ifdef DEBUG
+    Serial.println(F("----------"));
+  #endif
+}
+
+void prepareControlPage() {
+
+  // Fill in the one-time-only objects on the page
+  // --> Title, length, toggle states
+  
+  char nx[64];
+  storedTrackName.getText(nx, sizeof(nx));
+  trackName.setText(nx);
+    
+//  if (getFileN(selection,sizeof(nx),nx,true))        // name without extension
+//    trackName.setText(nx);
+//  else {
+//    #ifdef DEBUG
+//      Serial.println(F("Error retrieving shortened filename"));
+//    #endif
+//  }
+                  
+  // Display total track length
+  drawTime(timeMax,videoLength/38400);     // 2 bytes/sample, 48 samples/line, 32 lines/frame, 12.5 frames/second
 }
 
 
@@ -280,30 +341,46 @@ void trackSelectCallback(void *) {
   Serial.println(F("trackSelectCallback()"));
 #endif
 
-  uint32_t selection;
   if (selectedItem.getValue(&selection)) {
-    Serial.print(F("#"));
-    Serial.print(selection);
-    Serial.print(F(" = "));
 
+    #ifdef DEBUG
+      Serial.print(F("#"));
+      Serial.print(selection);
+      Serial.print(F(" = "));
+    #endif
+    
     char nx[64];
     boolean found = getFileN(selection,sizeof(nx),nx, false);
     if (found) {
       
-      Serial.println(nx);
+//      #ifdef DEBUG
+//        Serial.println(nx);
+//      #endif
 
       interrupts();
-      play(nx);
-      uiMode = MODE_PLAY;
       sendCommand("page 2");
+      uiMode = MODE_PLAY;
       OCR0B = 255;
-      
-    } else
-      Serial.println("File not found");
-      
-    // set track name on title in UI here
-  } else
-    Serial.println(F("error retrieving selection"));
+
+      storedTrackName.setText(nx);
+      prepareControlPage();
+
+      lastDetectedIR = 0;
+      playbackAbsolute = 0;
+      initPid();
+
+      play(nx);
+
+    } else {
+      #ifdef DEBUG
+        Serial.println(F("File not found"));
+      #endif
+    }
+  } else {
+    #ifdef DEBUG
+      Serial.println(F("error retrieving selection"));
+    #endif
+  }
 }
 
 
@@ -362,14 +439,82 @@ void closeButtonCallback(void *) {
   Serial.println(F("closeButtonCallback()"));
 #endif
 
-  sendCommand("page 1");
+  nbtv.close();
+
+  
+  sendCommand("page 0");
 //  noInterrupts();
   OCR0B = 0;        // stop motor
-  uiMode = MODE_SELECT_TRACK;
+  uiMode = MODE_TITLE;
   
 }
 
+void shiftStartCallback(void *) {
 
+  //TODO: shifting not really functional
+
+#ifdef DEBUG
+  Serial.println(F("shiftStartCallback()"));
+#endif
+
+  sendCommand("page 3");
+  uiMode = MODE_SHIFTER;
+
+}
+
+
+void shiftCallback(void *) {
+
+#ifdef DEBUG
+  Serial.println(F("shiftCallback()"));
+#endif
+
+  if (!shiftValue.getValue(&shiftFrame)) {
+  #ifdef DEBUG
+    Serial.println(F("Error retrieving shift value"));
+  #endif
+  } else {
+    #ifdef DEBUG
+      Serial.print(F("Shift Frame = "));
+      Serial.println(shiftFrame);
+    #endif
+  }
+}
+
+void shiftCloseCallback(void *) {
+
+#ifdef DEBUG
+  Serial.println(F("shiftCloseCallback()"));
+#endif
+
+  sendCommand("page 2");
+  prepareControlPage();
+  uiMode = MODE_PLAY;
+}
+
+
+void titleCallback(void *) {
+#ifdef DEBUG
+  Serial.println(F("titleCallback()"));
+#endif
+  sendCommand("page 1");
+
+  
+  // Count the number of menu items and then set the maximum range for the slider
+  // We subtract 8 from the count because there are 8 lines already visible in the window
+
+  int menuSize = countFiles();
+  if (!trackSlider.setMaxval(menuSize > 9 ? menuSize - 9 : 0)) {
+    #ifdef DEBUG
+      Serial.println(F("Error setting slider maximum!"));
+    #endif
+  }
+  
+  writeMenuStrings();           // defaults to REFRESH_ALL_LINES, so screen is populated
+
+  
+  uiMode = MODE_INIT;
+}
 
 
 #endif
@@ -386,12 +531,12 @@ void setup() {
 
 #ifdef SDX
   // Setup access to the SD card
-#define SD_CS_PIN 4
+  #define SD_CS_PIN 4
   pinMode(SS, OUTPUT);
   if (!nbtvSD.begin(SD_CS_PIN)) {
-#ifdef DEBUG
-    Serial.println(F("SD failed!"));
-#endif
+    #ifdef DEBUG
+      Serial.println(F("SD failed!"));
+    #endif
   }
 #endif
 
@@ -406,38 +551,39 @@ void setup() {
   // once the scrolling system is going, everything seems hunky dory.  So, somewhere there's
   // a mistake by yours truly...
   
-  delay(1000);
-
+//  delay(1000);
+  while (nexSerial.available())
+    nexSerial.read();
+    
   //
   //////////////////////////////////////////////////////////////////////////////////////////
 
-  // Attach callbacks - one for the slider, and one each for the selectable lines
+  // Page 0 - Title
+  titleScreen.attachPop(titleCallback, &titleScreen);
+
+  // Page 1 - Menu Selection
   trackSlider.attachPop(writeMenuStrings, &trackSlider);
-  for (int i=0; i<8; i++)
+  for (int i=0; i<9; i++)
     menuList[i]->attachPop(trackSelectCallback, menuList[i]);
 
-  // Count the number of menu items and then set the maximum range for the slider
-  // We subtract 8 from the count because there are 8 lines already visible in the window
-
-  int menuSize = countFiles();
-  if (!trackSlider.setMaxval(menuSize > 8 ? menuSize - 8 : 0))
-    Serial.println(F("Error setting slider maximum!"));
-
-  writeMenuStrings();           // defaults to REFRESH_ALL_LINES, so screen is populated
-
-
   // Page 2 - controls
-
   seekerSlider.attachPop(seekerCallback, &seekerSlider);
   brightnessSlider.attachPop(brightnessCallback, &brightnessSlider);
   contrastSlider.attachPop(contrastCallback, &contrastSlider);
   volumeSlider.attachPop(volumeCallback, &volumeSlider);
   gamma.attachPop(gammaCallback, &gamma);
   closeButton.attachPop(closeButtonCallback, &closeButton);
+  shiftPic.attachPop(shiftStartCallback, &shiftPic);
+
+  // Page 3 - shifter
+  shiftUp.attachPop(shiftCallback, &shiftUp);
+  shiftLeft.attachPop(shiftCallback, &shiftLeft);
+  shiftRight.attachPop(shiftCallback, &shiftRight);
+  shiftDown.attachPop(shiftCallback, &shiftDown);
+  shiftClose.attachPop(shiftCloseCallback, &shiftClose);
   
 #endif
 }
-
 
 
 int countFiles() {
@@ -454,27 +600,14 @@ int countFiles() {
   
   SdFile file;
   while (file.openNext(vwd, O_READ)) {
-    memset(name,0,sizeof(name));
+//    memset(name,0,sizeof(name));
     file.getName(name,sizeof(name)-1);
     file.close();
-    if (name[0] != 46) {
-      char *px = strstr(name,".WAV");
-      if (!px)
-        px = strstr(name,".wav");
-
-      char *px2 = strstr(name,".nbtv8.wav");
-      if (!px2)
-        px2 = strstr(name,".NVTV8.WAV");
-      if (px) *px = 0;
-      if (px2) *px2 = 0;
-        
-      if (px||px2)
+    if (name[0] != 46 && strstr(name,".wav"))
         count++; 
-    }
   }
   return count;
 }
-
 
 
 boolean getFileN(int n,int s, char *name, boolean strip = true) {
@@ -493,26 +626,17 @@ boolean getFileN(int n,int s, char *name, boolean strip = true) {
   while (file.openNext(vwd, O_READ)) {
     file.getName(name,s-1);
     file.close();
-//#ifdef DEBUG
+    #ifdef DEBUG
 //    Serial.println(name);
-//#endif
+    #endif
     if (name[0] != 46) {
-      char *px = strstr(name,".WAV");
-      if (!px)
-        px = strstr(name,".wav");
-
-      char *px2 = strstr(name,".nbtv8.wav");
-      if (!px2)
-        px2 = strstr(name,".NVTV8.WAV");
-
-      if (strip) {
-        if (px) *px = 0;
-        if (px2) *px2 = 0;
-      }
-        
-      if (px||px2)
+      char *px = strstr(name,".wav");
+      if (px) {
+        if (strip)
+          *px = 0;
         if (!n--)
           return true;
+      }
     }
   }
   return false;
@@ -526,9 +650,6 @@ char *composeMenuItem(int item,int s, char *p) {
       *p = 0;
     return p;
 }
-
-
-uint32_t base = 65535;
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -612,8 +733,6 @@ void setupIRComparator() {
 //-- Analog comparator interrupt service routine -------------------------------------------------
 // Triggered by sync hole detected by IR sensor, connected to pin 7 (AC)
 
-int phasePid = 0;
-int pbDelta;
 
 ISR(ANALOG_COMP_vect) {
 
@@ -642,41 +761,46 @@ ISR(ANALOG_COMP_vect) {
           }
           break;
         
-        case 1:    
+        case 1:
+          {    
 
-//          Serial.println(deltaSample);
-          
-          // This next bit is super cool.  The PID synchronises the disc speed to 12.5 Hz (indirectly through the singleFrame
-          // value, which is a count of #samples per rotation at 12.5 Hz).  Since the disc and the playback of the video
-          // are supposed to be exactly in synch, we know that both SHOULD start a frame/rotation at exactly the same time.
-          // So since we know we're at the start of a rotation (we just detected the synch hole), then we can compare
-          // how 'out of phase' the video is by simply looking at the video playback sample # ('plabackAbsolute') and
-          // use the sub-frame offset as an indicator of how inaccurate the framing is.  Once we know that, instead of
-          // trying to change the video timing, we just change the disc speed. How do we do that?  By tricking the PID
-          // into thinking the disc is running faster than it really is by telling it that the time between now and
-          // the last detected rotation is actually shorter than measured. A consequence of this is that the PID will try
-          // to slow the disc down a fraction, which will in turn mean the video is playing slightly faster relative
-          // to the timing of the disc, and the image will shift up and left.  We also (gosh this is elegant) get the
-          // ability to shift the image up/down.  So we can hardwire the exact framing vertical of the displayed image,
-          // too.
-      
-          pbDelta = timeDiff % singleFrame;   // how inaccurate is framing?
-          if (pbDelta > 65) {                               // if we need to 'vertically' adjust (OR horizontally)
-      
-              // Note, the harwred number is televisor-specific. This is just the vertical framing counter, and can be increased
-              // or decreased to shift the framing up or down.
             
-              int adjust = (pbDelta - 55 ) / 8 + 1;         // use how far out of wonk as a speed control
-              if (adjust > 64)                              // but cap it because otherwise we overwhelm the PID
-                adjust = 64;
-              lastDetectedIR -= adjust;                     // trick the PID into thinking the disc is fast
-          }
+            // This next bit is super cool.  The PID synchronises the disc speed to 12.5 Hz (indirectly through the singleFrame
+            // value, which is a count of #samples per rotation at 12.5 Hz).  Since the disc and the playback of the video
+            // are supposed to be exactly in synch, we know that both SHOULD start a frame/rotation at exactly the same time.
+            // So since we know we're at the start of a rotation (we just detected the synch hole), then we can compare
+            // how 'out of phase' the video is by simply looking at the video playback sample # ('plabackAbsolute') and
+            // use the sub-frame offset as an indicator of how inaccurate the framing is.  Once we know that, instead of
+            // trying to change the video timing, we just change the disc speed. How do we do that?  By tricking the PID
+            // into thinking the disc is running faster than it really is by telling it that the time between now and
+            // the last detected rotation is actually shorter than measured. A consequence of this is that the PID will try
+            // to slow the disc down a fraction, which will in turn mean the video is playing slightly faster relative
+            // to the timing of the disc, and the image will shift up and left.  We also (gosh this is elegant) get the
+            // ability to shift the image up/down.  So we can hardwire the exact framing vertical of the displayed image,
+            // too.
+  
+            //Serial.println(shiftFrame);
+  
+            //TODO: shift rate OK at beginning, too slow at end
+            
+            uint32_t pbDelta = timeDiff % singleFrame;   // how inaccurate is framing?
+            if (pbDelta > shiftFrame) {                           // if we need to 'vertically' adjust (OR horizontally)
+        
+                // Note, the hardwired number is televisor-specific. This is just the vertical framing counter, and can be increased
+                // or decreased to shift the framing up or down.
+              
+                int adjust = (pbDelta - shiftFrame ) / 8 + 1;     // use how far out of wonk as a speed control
+                if (adjust > 64)                                  // but cap it because otherwise we overwhelm the PID
+                  adjust = 64;
+                lastDetectedIR -= adjust;                         // trick the PID into thinking the disc is fast
+            }
       
-  #ifdef PID 
-          OCR0B = calculatePID(deltaSample-singleFrame);    // write the new motor PID speed
-  #else
-          OCR0B = 53;
-  #endif
+            #ifdef PID 
+                    OCR0B = calculatePID(deltaSample-singleFrame);    // write the new motor PID speed
+            #else
+              OCR0B = 53;
+            #endif
+          }
           break;
   
         default:
@@ -686,44 +810,6 @@ ISR(ANALOG_COMP_vect) {
   }
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-// NEXTION LCD...
-
-#ifdef NEXTION
-
-void NextionUiLoop(void) {
-
-
-//  // Adjust the seekbar position to the current playback position
-//  uint32_t seekPosition = (playbackAbsolute << 8) / videoLength;      //256*(double)playbackAbsolute/(double)videoLength;
-//  if (seekPosition != lastSeekPosition) {
-//    seekerSlider.setValue(seekPosition);
-//    lastSeekPosition = seekPosition;
-//  }
-//
-//  // Display elapsed time in format MM:SS
-//  long seconds = playbackAbsolute / singleFrame / 12.5;
-//  if (seconds != lastSeconds) {
-//    lastSeconds = seconds;
-//
-//    int s = seconds % 60;
-//    int m = seconds / 60;
-//  
-//    char times[6];
-//    times[0] = '0'+m/10;
-//    times[1] = '0'+m%10;
-//    times[2] = ':';
-//    times[3] = '0'+s/10;
-//    times[4] = '0'+s%10;
-//    times[5] = 0;
-//
-//    timePos.setText(times);
-//  }
-}
-
-
-
-#endif
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -759,18 +845,22 @@ boolean wavInfo(char* filename) {
 
   nbtv = nbtvSD.open(filename);
   if (!nbtv) {
-#if defined(DEBUG)
+    #if defined(DEBUG)
       Serial.print(F("Error when opening file '"));
       Serial.print(filename);
       Serial.print(F("'"));
-#endif
+    #endif
     return false;
   }
 
   char data[4];
+  
+//  uint32_t header;
+  //nbtv.read(&header,4);
   nbtv.read(data,4);
 
-  if (strncmp(data,"RIFF",4)) {
+  if (data[0]!= 'R' || data[1]!='I' || data[2]!='F' || data[3]!='F') {
+//  if (header != 0x46464952) { //'FFIR'
     #ifdef SHOW_WAV_STATS
       Serial.println(F("Error: WAV has no RIFF header"));
     #endif
@@ -784,8 +874,10 @@ boolean wavInfo(char* filename) {
     Serial.println(chunkSize+8);
   #endif
   
-  nbtv.read(data,4);
-  if (strncmp(data,"WAVE",4)) {
+//  nbtv.read(&header,4);
+//  if (header != 0x45564157) { //'EVAW'
+    nbtv.read(data,4);
+    if (data[0]!='W' || data[1]!='A' || data[2]!='V' || data[3]!='E') {
     #ifdef DEBUG
       Serial.println(F("Error: WAVE header incorrect"));
     #endif
@@ -795,18 +887,12 @@ boolean wavInfo(char* filename) {
   long position;
   while (true) {
 
-    nbtv.read(data,4);        // read next chunk header
-
-    #ifdef SHOW_WAV_STATS
-      for (int i=0; i<4; i++){
-        Serial.print(F("'"));
-        Serial.print(data[i]);
-        Serial.print(F("'"));
-      }
-      Serial.println();
-    #endif
+//    nbtv.read(&header,4);        // read next chunk header
+    nbtv.read(data,4);
     
-    if (!strncmp(data,"nbtv",4)) {
+//    if (header == 0x7674626e) { //'vtbn'
+    if (data[0]=='n' && data[1]=='b' && data[2]=='t' && data[3]=='v') {
+//    if (!strncmp(data,"nbtv",4)) {
       #ifdef SHOW_WAV_STATS
         Serial.println(F("'nbtv' chunk"));
       #endif
@@ -820,7 +906,9 @@ boolean wavInfo(char* filename) {
       continue;
     }
 
-    if (!strncmp(data,"fmt ",4)) {
+//    if (header == 0x20746D66) { //' tmf'
+    if (data[0]=='f' && data[1]=='m' && data[2]=='t' && data[3]==' ') {
+//    if (!strncmp(data,"fmt ",4)) {
       #ifdef SHOW_WAV_STATS
         Serial.println(F("'fmt ' chunk"));
       #endif
@@ -839,6 +927,7 @@ boolean wavInfo(char* filename) {
         Serial.print(F("Audio format: "));
         Serial.println(audioFormat);
       #endif
+      
       int numChannels;
       nbtv.read(&numChannels,2);
       #ifdef SHOW_WAV_STATS
@@ -851,18 +940,21 @@ boolean wavInfo(char* filename) {
         Serial.print(F("rate: "));
         Serial.println(sampleRate);
       #endif
+      
       long byteRate;
       nbtv.read(&byteRate,4);
       #ifdef SHOW_WAV_STATS
         Serial.print(F("byte rate: "));
         Serial.println(byteRate);
       #endif
+      
       int blockAlign;
       nbtv.read(&blockAlign,2);
       #ifdef SHOW_WAV_STATS
         Serial.print(F("align: "));
         Serial.println(blockAlign);
       #endif
+      
       nbtv.read((void *)&bitsPerSample,2);
       #ifdef SHOW_WAV_STATS
         Serial.print(F("bps: "));
@@ -875,14 +967,16 @@ boolean wavInfo(char* filename) {
       continue;
     }
 
-    if (!strncmp(data,"data",4)) {
+//    if (header == 0x61746164) { //'atad'
+    if (data[0]=='d' && data[1]=='a' && data[2]=='t' && data[3]=='a') {
+//    if (!strncmp(data,"data",4)) {
       #ifdef SHOW_WAV_STATS
         Serial.println(F("data chunk"));
       #endif
       
       nbtv.read(&videoLength,4);
       #ifdef SHOW_WAV_STATS
-        Serial.print(F("video size: "));
+        Serial.print(F("video size (s): "));
         Serial.println(videoLength);
       #endif
       
@@ -893,10 +987,7 @@ boolean wavInfo(char* filename) {
     }
     
     #ifdef DEBUG      
-      Serial.print(F("unrecognised chunk in WAV: '"));
-      for (int i=0; i<4; i++)
-        Serial.print(data[i]);
-      Serial.println(F("'"));
+      Serial.print(F("unrecognised chunk in WAV"));
     #endif
     return false;        
   }
@@ -920,7 +1011,7 @@ void play(char* filename, unsigned long seekPoint) {
   if (seekPoint) {    //TODO; not working
     long seekTo = singleFrame * seekPoint * 12.5 + nbtv.position();
     #ifdef DEBUG
-      Serial.print("Seek to ");
+      Serial.print(F("Seek to "));
       Serial.println(seekTo);
     #endif
     nbtv.seek( seekTo );
@@ -964,13 +1055,14 @@ void play(char* filename, unsigned long seekPoint) {
 ISR(TIMER3_CAPT_vect) {
 #ifdef SDX
   
+  static boolean alreadyStreaming = false;
   if (!alreadyStreaming) {
     alreadyStreaming = true;    // prevent THIS interrupt from interrupting itself...
     interrupts();               // but allow other interrupts (the audio/video write)
     
     unsigned int bytesToStream = playbackAbsolute - streamAbsolute;
-    if (bytesToStream > 64) {                     // theory: more efficient to do bigger blocks
-      bytesToStream = 64;                         // TODO: BUG! Remove this: no picture!! ???
+    if (bytesToStream > 32) {                     // theory: more efficient to do bigger blocks
+      //bytesToStream = 64;                         // TODO: BUG! Remove this: no picture!! ???
       
       void *dest = (void *)(circularAudioVideoBuffer + bufferOffset);
       bufferOffset += bytesToStream;
@@ -1049,9 +1141,41 @@ ISR(TIMER3_OVF_vect) {
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void drawTime(NexText &t, int sec) {
+
+  int s = sec % 60;
+  int m = sec / 60;
+
+  char times[6];
+
+  if (m/10)
+    times[0] = '0'+m/10;
+  else
+    times[0] = ' ';
+  times[1] = '0'+m%10;
+  times[2] = ':';
+  times[3] = '0'+s/10;
+  times[4] = '0'+s%10;
+  times[5] = 0;
+
+  t.setText(times);
+}
+
+
+
+
 void loop() {
   
   switch (uiMode) {
+
+    case MODE_TITLE:
+      #ifdef NEXTION
+//        #ifdef DEBUG
+//          Serial.println(F("title"));
+//        #endif
+        nexLoop(titleList);
+      #endif
+      break;
 
     /////////////////////////////////////////////////////////////////////////////////////////////
     
@@ -1077,9 +1201,43 @@ void loop() {
 
     case MODE_PLAY:           // movie is playing
 #ifdef NEXTION
+      {
+        NexTouch *controlListen[] = {
+          &seekerSlider, &brightnessSlider, &contrastSlider, &volumeSlider, &gamma, &closeButton, &shiftPic, NULL
+        };
         nexLoop(controlListen);
+
+
+        // Adjust the seekbar position to the current playback position
+        uint32_t seekPosition = (playbackAbsolute << 8) / videoLength;      //256*(double)playbackAbsolute/(double)videoLength;
+        if (seekPosition != lastSeekPosition) {
+          seekerSlider.setValue(seekPosition);
+          lastSeekPosition = seekPosition;
+        }
+      
+        // Display elapsed time in format MM:SS
+        long seconds = playbackAbsolute / singleFrame / 12.5;
+        if (seconds != lastSeconds) {
+          lastSeconds = seconds;
+          drawTime(timePos,seconds);
+        }
+      }
 #endif
       break;
+
+    /////////////////////////////////////////////////////////////////////////////////////////////
+
+    case MODE_SHIFTER:           // movie is playing and we're looking at the frame-shift dialog
+#ifdef NEXTION
+      {
+        NexTouch *shiftListen[] = {
+          &shiftUp, &shiftLeft, &shiftRight, &shiftDown, &shiftClose, NULL
+        };
+        nexLoop(shiftListen);
+      }
+#endif
+      break;
+
 
     default:
       break;
