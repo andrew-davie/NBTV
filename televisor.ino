@@ -139,6 +139,7 @@ int uiMode = MODE_TITLE;
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int phasePid = 0;
+boolean alreadyStreaming = false;
 
 
 int customBrightness = 0;
@@ -310,6 +311,10 @@ void writeMenuStrings(void * = NULL) {
   #endif
 }
 
+#endif
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void prepareControlPage() {
 
   // Fill in the one-time-only objects on the page
@@ -331,6 +336,7 @@ void prepareControlPage() {
   drawTime(timeMax,videoLength/38400);     // 2 bytes/sample, 48 samples/line, 32 lines/frame, 12.5 frames/second
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void trackSelectCallback(void *) {
 
@@ -350,26 +356,25 @@ void trackSelectCallback(void *) {
     #endif
     
     char nx[64];
+//    memset(nx,0,sizeof(nx));
     boolean found = getFileN(selection,sizeof(nx),nx, false);
     if (found) {
-      
-//      #ifdef DEBUG
-//        Serial.println(nx);
-//      #endif
+      #ifdef DEBUG
+        Serial.println(nx);
+      #endif
 
       interrupts();
       sendCommand("page 2");
       uiMode = MODE_PLAY;
       OCR0B = 255;
 
+
+      setupFastPwm(PWM187k);
+//      getFileN(selection, sizeof(nx), nx, false);
+      play(nx);
+
       storedTrackName.setText(nx);
       prepareControlPage();
-
-      lastDetectedIR = 0;
-      playbackAbsolute = 0;
-      initPid();
-
-      play(nx);
 
     } else {
       #ifdef DEBUG
@@ -378,11 +383,12 @@ void trackSelectCallback(void *) {
     }
   } else {
     #ifdef DEBUG
-      Serial.println(F("error retrieving selection"));
+      Serial.println(F("E: selection"));
     #endif
   }
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void brightnessCallback(void *) {
 
@@ -395,6 +401,8 @@ void brightnessCallback(void *) {
     customBrightness = (int)(256.*(value-128.)/128.);
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void contrastCallback(void *) {
 
 //#ifdef DEBUG
@@ -405,6 +413,8 @@ uint32_t value;
   if (contrastSlider.getValue(&value))
     customContrast2 = value << 1;
 }
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void volumeCallback(void *) {
 
@@ -417,6 +427,8 @@ void volumeCallback(void *) {
     customVolume = value << 1;
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void gammaCallback(void *) {
 
 //#ifdef DEBUG
@@ -428,26 +440,45 @@ void gammaCallback(void *) {
     customGamma = (value!=0);
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void seekerCallback(void *) {
 //      if (seekerSlider.getValue(&value))
 // TODO: modify seek position based on seeker value
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void closeButtonCallback(void *) {
 
-#ifdef DEBUG
-  Serial.println(F("closeButtonCallback()"));
-#endif
+//#ifdef DEBUG
+//  Serial.println(F("closeButtonCallback()"));
+//#endif
 
+  TCCR4B= 0;                          // effectively turn off LED interrupt
+  TCCR3A = TCCR3B = 0;                // turn off motor buffer stuffer and playback
+
+  alreadyStreaming = true;            // prevent SD reader from running
+
+//  noInterrupts();
   nbtv.close();
 
-  
   sendCommand("page 0");
-//  noInterrupts();
+
+  
   OCR0B = 0;        // stop motor
+  
+  // blacken screen
+  OCR4A = 0;
+  DDRC |= 1<<7;                       // Set Output Mode C7
+  TCCR4A = 0x82;                      // Activate channel A
+  
+  
   uiMode = MODE_TITLE;
   
 }
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void shiftStartCallback(void *) {
 
@@ -462,6 +493,7 @@ void shiftStartCallback(void *) {
 
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void shiftCallback(void *) {
 
@@ -481,17 +513,20 @@ void shiftCallback(void *) {
   }
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void shiftCloseCallback(void *) {
 
-#ifdef DEBUG
-  Serial.println(F("shiftCloseCallback()"));
-#endif
+//#ifdef DEBUG
+//  Serial.println(F("shiftCloseCallback()"));
+//#endif
 
   sendCommand("page 2");
   prepareControlPage();
   uiMode = MODE_PLAY;
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void titleCallback(void *) {
 #ifdef DEBUG
@@ -499,9 +534,8 @@ void titleCallback(void *) {
 #endif
   sendCommand("page 1");
 
-  
   // Count the number of menu items and then set the maximum range for the slider
-  // We subtract 8 from the count because there are 8 lines already visible in the window
+  // We subtract 9 from the count because there are 9 lines already visible in the window
 
   int menuSize = countFiles();
   if (!trackSlider.setMaxval(menuSize > 9 ? menuSize - 9 : 0)) {
@@ -511,14 +545,10 @@ void titleCallback(void *) {
   }
   
   writeMenuStrings();           // defaults to REFRESH_ALL_LINES, so screen is populated
-
-  
   uiMode = MODE_INIT;
 }
 
-
-#endif
-
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void setup() {
 
@@ -585,6 +615,7 @@ void setup() {
 #endif
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int countFiles() {
 
@@ -609,6 +640,7 @@ int countFiles() {
   return count;
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 boolean getFileN(int n,int s, char *name, boolean strip = true) {
 
@@ -642,6 +674,7 @@ boolean getFileN(int n,int s, char *name, boolean strip = true) {
   return false;
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 char *composeMenuItem(int item,int s, char *p) {
     memset(p,0,s);
@@ -762,9 +795,7 @@ ISR(ANALOG_COMP_vect) {
           break;
         
         case 1:
-          {    
-
-            
+          {
             // This next bit is super cool.  The PID synchronises the disc speed to 12.5 Hz (indirectly through the singleFrame
             // value, which is a count of #samples per rotation at 12.5 Hz).  Since the disc and the playback of the video
             // are supposed to be exactly in synch, we know that both SHOULD start a frame/rotation at exactly the same time.
@@ -778,17 +809,9 @@ ISR(ANALOG_COMP_vect) {
             // to the timing of the disc, and the image will shift up and left.  We also (gosh this is elegant) get the
             // ability to shift the image up/down.  So we can hardwire the exact framing vertical of the displayed image,
             // too.
-  
-            //Serial.println(shiftFrame);
-  
-            //TODO: shift rate OK at beginning, too slow at end
             
-            uint32_t pbDelta = timeDiff % singleFrame;   // how inaccurate is framing?
+            uint32_t pbDelta = timeDiff % singleFrame;            // how inaccurate is framing?
             if (pbDelta > shiftFrame) {                           // if we need to 'vertically' adjust (OR horizontally)
-        
-                // Note, the hardwired number is televisor-specific. This is just the vertical framing counter, and can be increased
-                // or decreased to shift the framing up or down.
-              
                 int adjust = (pbDelta - shiftFrame ) / 8 + 1;     // use how far out of wonk as a speed control
                 if (adjust > 64)                                  // but cap it because otherwise we overwhelm the PID
                   adjust = 64;
@@ -796,7 +819,7 @@ ISR(ANALOG_COMP_vect) {
             }
       
             #ifdef PID 
-                    OCR0B = calculatePID(deltaSample-singleFrame);    // write the new motor PID speed
+              OCR0B = calculatePID(deltaSample-singleFrame);    // write the new motor PID speed
             #else
               OCR0B = 53;
             #endif
@@ -811,10 +834,6 @@ ISR(ANALOG_COMP_vect) {
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-// Streaming from SD card
-
 // Gamma correction using parabolic curve
 // Table courtesy Klaas Robers
 
@@ -836,14 +855,24 @@ const uint8_t PROGMEM gamma8[] = {
   197,199,201,202,204,206,208,209,211,213,215,217,219,220,222,224,
   226,228,230,232,234,235,237,239,241,243,245,247,249,251,253,255
   };
-
   
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void error(char *data) {
+  Serial.print(data[0]);
+  Serial.print(data[1]);
+  Serial.print(data[2]);
+  Serial.println(data[3]);
+}
+
 
 boolean wavInfo(char* filename) {
 
 #ifdef SDX
 
   nbtv = nbtvSD.open(filename);
+  nbtv.rewind();
+  
   if (!nbtv) {
     #if defined(DEBUG)
       Serial.print(F("Error when opening file '"));
@@ -862,7 +891,8 @@ boolean wavInfo(char* filename) {
   if (data[0]!= 'R' || data[1]!='I' || data[2]!='F' || data[3]!='F') {
 //  if (header != 0x46464952) { //'FFIR'
     #ifdef SHOW_WAV_STATS
-      Serial.println(F("Error: WAV has no RIFF header"));
+      Serial.println(F("Error: no RIFF header"));
+      error(data);
     #endif
     return false;
   }
@@ -1000,9 +1030,9 @@ boolean wavInfo(char* filename) {
 #endif
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void play(char* filename, unsigned long seekPoint) {
-
 #ifdef SDX
 
   if (!wavInfo(filename))
@@ -1021,8 +1051,10 @@ void play(char* filename, unsigned long seekPoint) {
   streamAbsolute = 0;
   pbp = 0;
   bufferOffset = 0;
+  initPid();
+  alreadyStreaming = false;
   
-  nbtv.read( (void *)circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE );      // pre-fill the circular buffer so it's valid
+  nbtv.read((void *)circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE);      // pre-fill the circular buffer so it's valid
  
   noInterrupts();
   
@@ -1052,10 +1084,10 @@ void play(char* filename, unsigned long seekPoint) {
 // routine is streaming data from the SD.  The hope is that we can read data from the SD to the buffer
 // fast enough to keep the interrupt happy. If we can't - then we get glitches on the screen/audio
 
+
 ISR(TIMER3_CAPT_vect) {
 #ifdef SDX
   
-  static boolean alreadyStreaming = false;
   if (!alreadyStreaming) {
     alreadyStreaming = true;    // prevent THIS interrupt from interrupting itself...
     interrupts();               // but allow other interrupts (the audio/video write)
@@ -1161,8 +1193,7 @@ void drawTime(NexText &t, int sec) {
   t.setText(times);
 }
 
-
-
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void loop() {
   
@@ -1170,9 +1201,6 @@ void loop() {
 
     case MODE_TITLE:
       #ifdef NEXTION
-//        #ifdef DEBUG
-//          Serial.println(F("title"));
-//        #endif
         nexLoop(titleList);
       #endif
       break;
@@ -1182,25 +1210,25 @@ void loop() {
     case MODE_INIT:
       setupIRComparator();
       setupMotorPWM();
-      setupFastPwm(PWM187k);
-#ifdef PID
-      SetTunings(1.5,0,0);
-#endif
+//      setupFastPwm(PWM187k);
+      #ifdef PID
+        SetTunings(1.5,0,0);
+      #endif
       uiMode = MODE_SELECT_TRACK;
       break;
 
     /////////////////////////////////////////////////////////////////////////////////////////////
 
     case MODE_SELECT_TRACK:           // file selection from menu
-#ifdef NEXTION
-      nexLoop(menuList);
-#endif
+      #ifdef NEXTION
+        nexLoop(menuList);
+      #endif
       break;
 
     /////////////////////////////////////////////////////////////////////////////////////////////
 
     case MODE_PLAY:           // movie is playing
-#ifdef NEXTION
+      #ifdef NEXTION
       {
         NexTouch *controlListen[] = {
           &seekerSlider, &brightnessSlider, &contrastSlider, &volumeSlider, &gamma, &closeButton, &shiftPic, NULL
@@ -1222,20 +1250,18 @@ void loop() {
           drawTime(timePos,seconds);
         }
       }
-#endif
+      #endif
       break;
 
     /////////////////////////////////////////////////////////////////////////////////////////////
 
     case MODE_SHIFTER:           // movie is playing and we're looking at the frame-shift dialog
-#ifdef NEXTION
+      #ifdef NEXTION
       {
-        NexTouch *shiftListen[] = {
-          &shiftUp, &shiftLeft, &shiftRight, &shiftDown, &shiftClose, NULL
-        };
+        NexTouch *shiftListen[] = { &shiftUp, &shiftLeft, &shiftRight, &shiftDown, &shiftClose, NULL };
         nexLoop(shiftListen);
       }
-#endif
+      #endif
       break;
 
 
