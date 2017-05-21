@@ -31,7 +31,7 @@
 
 //#define DEBUG                     // diagnostics to serial terminal (WARNING: busy-waits)
 #define NEXTION                   // include Nextion LCD functionality
-#define QVIEW
+//#define GENERIC                   // allow NON 8-bit files to be played (deprecated)
 
 #ifdef DEBUG
 #define SHOW_WAV_STATS            // show the WAV file header details as it is loaded
@@ -52,6 +52,8 @@
 #define PWM6k   6   //   5859 Hz
 #define PWM3k   7   //   2930 Hz
 
+#define PIN_MOTOR 3
+
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 #ifdef NEXTION
@@ -69,19 +71,19 @@
 uint32_t lastSeekPosition;
 //int phase = 0;
 long lastSeconds;
-uint32_t shiftFrame = 80;
+uint32_t shiftFrame = 60;
 uint32_t selection;             // selected track # from menu
 boolean showInfo = false;
 
 
 
 // Page 2 - The control menu
-NexSlider seekerSlider = NexSlider(2, 22, "s");
+NexSlider seekerSlider = NexSlider(2, 21, "s");
 NexSlider contrastSlider = NexSlider(2, 7, "c");
 NexSlider volumeSlider = NexSlider(2, 8, "v");
-NexDSButton gamma = NexDSButton(2, 16, "g");
-NexDSButton repeat = NexDSButton(2, 18, "r");
-NexButton closeButton = NexButton(2, 17, "x");
+NexDSButton gamma = NexDSButton(2, 15, "g");
+NexDSButton repeat = NexDSButton(2, 17, "r");
+NexButton closeButton = NexButton(2, 16, "x");
 NexButton frameButton = NexButton(2, 23, "f");
 #endif
 
@@ -94,11 +96,9 @@ NexButton frameButton = NexButton(2, 23, "f");
 #define MODE_SELECT_TRACK 3
 #define MODE_PLAY 4
 #define MODE_SHIFTER 5
-#ifdef QVIEW
-  #define MODE_Q 6
-#endif
+#define MODE_Q 6
 
-int uiMode = MODE_TITLE;
+int uiMode = MODE_TITLE_INIT;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -123,6 +123,8 @@ unsigned long singleFrame;
 
 volatile unsigned long timeDiff = 0;
 volatile unsigned long lastDetectedIR = 0;
+
+long position;        // WAV file start of data chunk (for rewind/seek positioning)
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -194,10 +196,17 @@ boolean getFileN(int n,int s, char *name, boolean reset, boolean strip);
 #define REFRESH_BOTTOM_LINE 7
 #define REFRESH_ALL_LINES 9
 
+void refresh(int base, int i) {
+  char nx[64];
+  strcpy(nx, "f0.txt=\"");
+  nx[1] = '0'+ i;
+  composeMenuItem(base + i, sizeof(nx)-8, nx+8, true);
+  strcat(nx,"\"");
+  sendCommand(nx);
+}
 
 void writeMenuStrings(void * = NULL) {
 
-  char nx[64];
   
   // Ask the Nextion which line(s) require updating.  See the REFRESH_ equates at top of file.
   uint32_t updateReq;
@@ -219,30 +228,12 @@ void writeMenuStrings(void * = NULL) {
   // latter is kind of slow, but that doesn't really matter.  Could switch the serial speed to 115200 bps to
   // make this super-quick, but it works just fine at default 9600 bps.
 
-  strcpy(nx, "f0.txt=\"");
 
-  switch (updateReq) {
-    
-    case REFRESH_TOP_LINE:
-    case REFRESH_BOTTOM_LINE: {
-        nx[1] = '0'+ (char)updateReq;
-        composeMenuItem(base + updateReq, sizeof(nx)-8, nx+8, true);
-        strcat(nx,"\"");
-        sendCommand(nx);
-      }
-      break;
-
-//    case REFRESH_ALL_LINES:
-    default:
-      for (int i=0; i<8; i++) {
-        nx[1] = '0' + i;
-        composeMenuItem(base + i, sizeof(nx)-8, nx+8, i==0);
-        strcat(nx,"\"");
-        sendCommand(nx);
-      }
-      break;
-  }
-
+  if (updateReq == REFRESH_ALL_LINES)
+    for (int i=0; i<8; i++)
+      refresh(base, i);
+  else
+    refresh(base, updateReq);
 }
 
 #endif
@@ -255,75 +246,65 @@ void prepareControlPage() {
 
   char nx[64];
 
-  // Set gamma, (volume), brightness and contrast to their correct values
-
-  
-
-  
-//    customBrightness = (int)(256.*(value-128.)/128.);
-//    customContrast2 = value << 1;
-//    customVolume = value << 1;
-
-    
-  
-  // Set "i" icon green if there's available text
-  sprintf(nx,"K.q.pic=%d",showInfo?15:21);
+  sprintf(nx,"g.val=%d",(int)customGamma);
+  sendCommand(nx);
+  sprintf(nx,"r.val=%d",(int)customRepeat);
   sendCommand(nx);
 
-  if (customRepeat)
-    sendCommand("K.r.val=1");
-  
-  // Display total track length
-  NexText timeMax = NexText(2, 20, "tmax");
-  drawTime(timeMax,videoLength/38400);     // 2 bytes/sample, 48 samples/line, 32 lines/frame, 12.5 frames/second
+  // Set "i" button ORANGE if there's no text
+  sprintf(nx,"q.pic=%d", showInfo ? 13 : 20);
+  sendCommand(nx);
+  sprintf(nx,"q.pic2=%d", showInfo ? 15 : 20);
+  sendCommand(nx);
+
+  drawTime((char*)"tmax",videoLength/38400);     // 2 bytes/sample, 48 samples/line, 32 lines/frame, 12.5 frames/second
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void commenceSelectedTrack(
-  uint32_t repeat
-  #ifdef QVIEW
-    ,boolean iQ=true
-  #endif
-  ) {
-
+void commenceSelectedTrack(boolean firstTime=true) {
 
   char nx[64];
   if (getFileN(selection,sizeof(nx),nx, true, false)) {
 
-    interrupts();
+    if (firstTime) {
+      customRepeat = false;            // 0 on new track, or keep existing if repeating
+      qInit(nx);                       // read and buffer INFO lines --> nextion
+    }
+  
     
-    #ifdef QVIEW
-      // Copy track summary (Q) to menu variable strings
-      // When Q page is displayed, the pre-init will copy these strings to the display strings
-      if (iQ)
-        qInit(nx);
-    #endif
- 
-    NexVariable storedTrackName = NexVariable(1, 28, "stn");
-    storedTrackName.setText(nx);
-
-    if (!repeat)
-      sendCommand("page 2");
-
-    customRepeat = repeat;
     lastSeconds =
     lastSeekPosition = 99999;
 
-    customBrightness = 0;
-    customContrast2 = 256;
-    customVolume = 256;
-    customGamma = true;
        
-    uiMode = MODE_PLAY;
-    OCR0B = 255;
+
+    setupMotorPWM();
 
     setupFastPwm(PWM187k);
+
     play(nx);
 
-    if (!repeat)
-      prepareControlPage();
+    // Strip the extension off the file name and send the result (title of the track) to the nextion
+    // stord in the stn (stored track name) variable. This is loaded by the Nextion at start of page 2 display
+    
+    char nx2[64];
+    strcpy(nx2,"stn.txt=\"");
+    strcat(nx2,nx);
+    strcpy(strstr(nx2,".wav"),"\"");
+    sendCommand(nx2);                           // --> stn.txt="track name"
 
+    if (firstTime) {
+
+      customBrightness = 0;
+      customContrast2 = 256;
+      customVolume = 256;
+      customGamma = true;
+
+      uiMode = MODE_PLAY;
+      sendCommand("page 2");
+      prepareControlPage();
+    }
+    
   } else {
     #ifdef DEBUG
       Serial.println(F("E: not found"));
@@ -335,30 +316,29 @@ void commenceSelectedTrack(
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void trackSelectCallback(void *) {
-
-  // When a menu item is selected, we read the selected item absolute number from the Nextion
-  // and use that to lookup the menu string itself, and display both of them on the serial.
-
   NexVariable selectedItem = NexVariable(1,10,"si");
   if (selectedItem.getValue(&selection))
-    commenceSelectedTrack(0);
+    commenceSelectedTrack(true);
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void brightnessCallback(void *) {
-
-//#ifdef DEBUG
-//  Serial.println(F("brightnessCallback()"));
-//#endif
-  
   uint32_t value;
   NexSlider brightnessSlider = NexSlider(2, 5, "b");
   if (brightnessSlider.getValue(&value))
     customBrightness = (int)(256.*(value-128.)/128.);
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void seekerSliderCallback(void *) {
+  Serial.println("seekerslidercallback");
+  uint32_t seekTo;
+  if (seekerSlider.getValue(&seekTo)) {
+    long seekPos = videoLength / 255. * seekTo;
+    resetStream(seekPos);
+  }
+}
+
 
 void contrastCallback(void *) {
   uint32_t value;
@@ -394,20 +374,19 @@ void closeButtonCallback(void *) {
   TCCR4B =                            // effectively turn off LED interrupt
   TCCR3A =
   TCCR3B = 0;                         // turn off motor buffer stuffer and playback
-
-  nbtv.close();                       // close any previously playing/streaming file
+  TCCR0A = 0;                         // motor PWM OFF
+  OCR0A = 0;                          // motor OFF (just in case PWM had a spike)
   
-  OCR0B = 0;                          // stop motor
+  nbtv.close();                       // close any previously playing/streaming file
   
   OCR4A = 0;                          // blacken LED (=screen)
   DDRC |= 1<<7;                       // Set Output Mode C7
   TCCR4A = 0x82;                      // Activate channel A
-  
+
   uiMode = MODE_TITLE_INIT;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
-#ifdef QVIEW
 
 void qInit(char *name) {
 
@@ -426,23 +405,20 @@ void qInit(char *name) {
   showInfo = explain;
   
   for (int i=0; i<12; i++) {
-     char name[4]; // = {0};
-     sprintf(name,"va%d", i);
-     NexText *t = new NexText(1, 12-i, name);
-     *nx = 0;
+     sprintf(nx,"v%02d.txt=\"", i);
+     char *p = nx+9;
      if (explain) {
-       // Copy a single line (max: 26 chars) of text from the file (copyright line = 40)
-       char *p = nx;
        do {
         explain.read(p,1);
        } while (*p++ != 10);
-       *(p-1) = 0;
+       p--;
      }
-     t->setText(nx);
-     delete t;
+     strcpy(p,"\"");
+     sendCommand(nx);
   }
   explain.close();
 }
+
 
 void qCallback(void *) {
   sendCommand("page 4");
@@ -451,18 +427,16 @@ void qCallback(void *) {
 
 void qExitCallback(void *) {
   sendCommand("page 2");
-  prepareControlPage();
   uiMode = MODE_PLAY;
 }
-#endif
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void shifterCallback(void *) {
   NexVariable shift = NexVariable(3, 1, "s");
   shift.getValue(&shiftFrame);
 //  Serial.println(shiftFrame);
 }
+
 
 void shiftCallback(void *) {
   // Enter shifter page
@@ -472,11 +446,9 @@ void shiftCallback(void *) {
 }
 
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-
 void titleCallback(void *) {
 
-  sendCommand("page 1");        // --> SELECT FILE
+  sendCommand("page 1");        // --> MENU
 
   // Count the number of menu items and then set the maximum range for the slider
   // We subtract 9 from the count because there are 9 lines already visible in the window
@@ -538,10 +510,11 @@ void setup() {
   // Page 2 - controls
   contrastSlider.attachPop(contrastCallback, &contrastSlider);
   volumeSlider.attachPop(volumeCallback, &volumeSlider);
-  gamma.attachPop(gammaCallback, &gamma);
-  repeat.attachPop(repeatCallback, &repeat);
+  gamma.attachPush(gammaCallback, &gamma);
+  repeat.attachPush(repeatCallback, &repeat);
   closeButton.attachPop(closeButtonCallback, &closeButton);
-
+  seekerSlider.attachPop(seekerSliderCallback, &seekerSlider);
+  
   
 #endif
 }
@@ -560,7 +533,7 @@ int countFiles() {
   while (file.openNext(vwd, O_READ)) {
     file.getName(name,sizeof(name)-1);
     file.close();
-    if (name[0] != 46 && strstr(name,".wav"))
+    if (*name != '.' && strstr(name,".wav"))
         count++; 
   }
   return count;
@@ -578,7 +551,7 @@ boolean getFileN(int n,int s, char *name, boolean hunt = true, boolean strip = t
   while (file.openNext(vwd, O_READ)) {
     file.getName(name,s);
     file.close();
-    if (name[0] != 46) {
+    if (*name != '.') {
       char *px = strstr(name,".wav");
       if (px) {
         if (strip)
@@ -604,7 +577,6 @@ void composeMenuItem(int item,int s, char *p, boolean hunt) {
 
 void setupMotorPWM() {
 
-  #define PIN_MOTOR 3
   
   pinMode( PIN_MOTOR, OUTPUT );
 
@@ -631,7 +603,7 @@ void setupMotorPWM() {
           //| bit(CS00)
           ;
 
-  OCR0B = 0;           // start motor spinning so PID can kick in in interrupt
+  OCR0B = 255;                      // full throttle!
 }
 
 
@@ -726,7 +698,7 @@ ISR(ANALOG_COMP_vect) {
             // ability to shift the image up/down.  So we can hardwire the exact framing vertical of the displayed image,
             // too.
 
-              shiftFrame = 60; //tmp
+//              shiftFrame = 60; //tmp
               uint32_t pbDelta = timeDiff % singleFrame;            // how inaccurate is framing?            
               if (pbDelta > shiftFrame) {                           // if we need to 'vertically' adjust (OR horizontally)
                 int adjust = (pbDelta - shiftFrame ) / 8 + 1;     // use how far out of wonk as a speed control
@@ -774,123 +746,60 @@ const uint8_t PROGMEM gamma8[] = {
 boolean wavInfo(char* filename) {
 
   nbtv = nbtvSD.open(filename);
-  nbtv.rewind();
-  
   if (!nbtv) {
-    #if defined(DEBUG)
-      Serial.print(F("E: open file "));
-      Serial.print(filename);
-    #endif
     return false;
   }
 
-  char data[4];
-  
-//  uint32_t header;
-  //nbtv.read(&header,4);
-  nbtv.read(data,4);
 
-  if (data[0]!= 'R' || data[1]!='I' || data[2]!='F' || data[3]!='F') {
-//  if (header != 0x46464952) { //'FFIR'
-    #ifdef SHOW_WAV_STATS
-      Serial.println(F("E: RIFF"));
-    #endif
+  nbtv.rewind();
+  
+  
+  uint32_t header;
+
+  nbtv.read(&header,4);
+  if (header != 0x46464952) { //'FFIR'
     return false;
   }
 
   long chunkSize;
   nbtv.read(&chunkSize,4);
-  #ifdef SHOW_WAV_STATS
-    Serial.print(F("WAV size: "));
-    Serial.println(chunkSize+8);
-  #endif
   
-//  nbtv.read(&header,4);
-//  if (header != 0x45564157) { //'EVAW'
-    nbtv.read(data,4);
-    if (data[0]!='W' || data[1]!='A' || data[2]!='V' || data[3]!='E') {
-    #ifdef DEBUG
-      Serial.println(F("E: WAVE head"));
-    #endif
+  nbtv.read(&header,4);
+  if (header != 0x45564157) { //'EVAW'
     return false;
   }
 
-  long position;
   while (true) {
 
-//    nbtv.read(&header,4);        // read next chunk header
-    nbtv.read(data,4);
+    nbtv.read(&header,4);        // read next chunk header
     
-//    if (header == 0x7674626e) { //'vtbn'
-    if (data[0]=='n' && data[1]=='b' && data[2]=='t' && data[3]=='v') {
-//    if (!strncmp(data,"nbtv",4)) {
-      #ifdef SHOW_WAV_STATS
-        Serial.println(F("'nbtv' chunk"));
-      #endif
+    if (header == 0x7674626e) { //'vtbn'
       nbtv.read(&chunkSize,4);
-      #ifdef SHOW_WAV_STATS
-        Serial.print(F("size: "));
-        Serial.println(chunkSize);
-      #endif
       position = nbtv.position();
       nbtv.seek(position+chunkSize);
       continue;
     }
 
-//    if (header == 0x20746D66) { //' tmf'
-    if (data[0]=='f' && data[1]=='m' && data[2]=='t' && data[3]==' ') {
-//    if (!strncmp(data,"fmt ",4)) {
-      #ifdef SHOW_WAV_STATS
-        Serial.println(F("'fmt ' chunk"));
-      #endif
+    else if (header == 0x20746D66) { //' tmf'
 
       nbtv.read(&chunkSize,4);
-      #ifdef SHOW_WAV_STATS
-        Serial.print(F("Size: "));
-        Serial.println(chunkSize);
-      #endif
-      
       position = nbtv.position();
       
       int audioFormat;
       nbtv.read(&audioFormat,2);
-      #ifdef SHOW_WAV_STATS
-        Serial.print(F("Audio: "));
-        Serial.println(audioFormat);
-      #endif
       
       int numChannels;
       nbtv.read(&numChannels,2);
-      #ifdef SHOW_WAV_STATS
-        Serial.print(F("# chans: "));
-        Serial.println(numChannels);
-      #endif
 
       nbtv.read(&sampleRate,4);
-      #ifdef SHOW_WAV_STATS
-        Serial.print(F("rate: "));
-        Serial.println(sampleRate);
-      #endif
       
       long byteRate;
       nbtv.read(&byteRate,4);
-      #ifdef SHOW_WAV_STATS
-        Serial.print(F("byte rate: "));
-        Serial.println(byteRate);
-      #endif
       
       int blockAlign;
       nbtv.read(&blockAlign,2);
-      #ifdef SHOW_WAV_STATS
-        Serial.print(F("align: "));
-        Serial.println(blockAlign);
-      #endif
       
       nbtv.read((void *)&bitsPerSample,2);
-      #ifdef SHOW_WAV_STATS
-        Serial.print(F("bps: "));
-        Serial.println(bitsPerSample);
-      #endif
       
       // Potential "ExtraParamSize/ExtraParams" ignored because PCM
 
@@ -898,78 +807,62 @@ boolean wavInfo(char* filename) {
       continue;
     }
 
-//    if (header == 0x61746164) { //'atad'
-    if (data[0]=='d' && data[1]=='a' && data[2]=='t' && data[3]=='a') {
-//    if (!strncmp(data,"data",4)) {
-      #ifdef SHOW_WAV_STATS
-        Serial.println(F("data chunk"));
-      #endif
-      
+    else if (header == 0x61746164) { //'atad'
       nbtv.read(&videoLength,4);
-      #ifdef SHOW_WAV_STATS
-        Serial.print(F("video size (s): "));
-        Serial.println(videoLength);
-      #endif
-      
-      //position = nbtv.position();
+      position = nbtv.position();
       // and now the file pointer should be pointing at actual sound data - we can return
 
       break;
     }
     
-    #ifdef DEBUG      
-      Serial.print(F("E: ? in WAV"));
-    #endif
-
     return false;        
   }
 
   singleFrame = sampleRate * 2 * bitsPerSample / 8 / 12.5;
-
   return true;
+}
+
+
+void resetStream(long seeker) {
+  noInterrupts();
+  nbtv.seek(position+seeker);
+  streamAbsolute =
+  playbackAbsolute = seeker;
+  lastDetectedIR = playbackAbsolute;
+  pbp =
+  bufferOffset = 0;
+
+  lastTime = ((double)playbackAbsolute) / singleFrame;                    // keep the PID happy
+  nbtv.read((void *)circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE);      // pre-fill the circular buffer so it's valid
+  interrupts();
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void play(char* filename, unsigned long seekPoint) {
 
-  if (!wavInfo(filename))
-      return;
+  if (wavInfo(filename)) {
   
-  if (seekPoint) {    //TODO; not working
-    long seekTo = singleFrame * seekPoint * 12.5 + nbtv.position();
-    #ifdef DEBUG
-      Serial.print(F("Seek to "));
-      Serial.println(seekTo);
-    #endif
-    nbtv.seek( seekTo );
-  }
+    phasePid =
+    lastErr =
+    lastTime =
+    errSum = 0;
 
-  playbackAbsolute = 0;
-  streamAbsolute = 0;
-  pbp = 0;
-  bufferOffset = 0;
+    noInterrupts();
 
-  // Pid...
-  phasePid = 0;
-  lastErr = 0;
-  lastTime = 0;
-  errSum = 0;
-
-  nbtv.read((void *)circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE);      // pre-fill the circular buffer so it's valid
- 
-  noInterrupts();
-  
-  // Start the timer(s)
-  // Uses /1 divisor, but counting up to 'resolution' each time  --> frequency!
+    long seeker = singleFrame * seekPoint * 12.5;
+    resetStream(seeker);
+   
+    // Start the timer(s)
+    // Uses /1 divisor, but counting up to 'resolution' each time  --> frequency!
+      
+    ICR3 = (int)((16000000. / sampleRate)+0.5);         // playback frequency
+    TCCR3A = _BV(WGM31) | _BV(COM3A1);
+    TCCR3B = _BV(WGM33) | _BV(WGM32) | _BV(CS30);       // see pp.133 ATmega32U4 manual for table
+    TIMSK3 |= (_BV(ICIE3) | _BV(TOIE3));                //WGM = 1110 --> FAST PWM with TOP in ICR :)
     
-  ICR3 = (int)((16000000. / sampleRate)+0.5);         // playback frequency
-  TCCR3A = _BV(WGM31) | _BV(COM3A1);
-  TCCR3B = _BV(WGM33) | _BV(WGM32) | _BV(CS30);       // see pp.133 ATmega32U4 manual for table
-  TIMSK3 |= (_BV(ICIE3) | _BV(TOIE3));                //WGM = 1110 --> FAST PWM with TOP in ICR :)
-  
-  interrupts();
-
+    interrupts();
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -995,7 +888,7 @@ ISR(TIMER3_CAPT_vect) {
     interrupts();               // but allow other interrupts (the audio/video write)
     
     unsigned int bytesToStream = playbackAbsolute - streamAbsolute;
-    if (bytesToStream > 32) {                     // theory: more efficient to do bigger blocks
+    if (bytesToStream > 32) {                       // theory: more efficient to do bigger blocks
       //bytesToStream = 64;                         // TODO: BUG! Remove this: no picture!! ???
       
       void *dest = (void *)(circularAudioVideoBuffer + bufferOffset);
@@ -1023,7 +916,8 @@ ISR(TIMER3_OVF_vect) {
 
   long audio;
   long bright;
-  if (bitsPerSample==16) {
+#ifdef GENERIC
+if (bitsPerSample==16) {
 
     audio = *(int *)(circularAudioVideoBuffer+pbp+2) * customVolume;
     audio >>= 16;
@@ -1033,7 +927,10 @@ ISR(TIMER3_OVF_vect) {
     playbackAbsolute += 4;
     pbp += 4;
     
-  } else { // assume 8-bit, NBTV WAV file format
+  } else
+
+#endif
+  { // assume 8-bit, NBTV WAV file format
 
     audio = circularAudioVideoBuffer[pbp+1] * customVolume;
     audio >>= 8;
@@ -1069,24 +966,31 @@ ISR(TIMER3_OVF_vect) {
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void drawTime(NexText &t, int sec) {
+void drawTime(char *name, int sec) {
 
   int s = sec % 60;
   int m = sec / 60;
 
-  char times[6];
+  char cmd[32];
+  sprintf(cmd,"%s.txt=\"%2d:%02d\"",name,m,s);
+  sendCommand(cmd);
+}
 
-  if (m/10)
-    times[0] = '0'+m/10;
-  else
-    times[0] = ' ';
-  times[1] = '0'+m%10;
-  times[2] = ':';
-  times[3] = '0'+s/10;
-  times[4] = '0'+s%10;
-  times[5] = 0;
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 
-  t.setText(times);
+// Check to see if the data for the video has run out
+// If so, then we stop the video, the motor, and then handle possible repeat button.
+// and remain in the same (sub) mode we might already have been in (INFO or SHIFT, for example)
+
+void handleEndOfVideo(int nextMode) {
+
+  if (playbackAbsolute >= videoLength) {              // Check for end of movie
+      closeButtonCallback(NULL);                      // stop everyting (same as 'pressing' stop button)
+      if (customRepeat) {                             // BUT we might have the repeat button ON
+        commenceSelectedTrack(false);                 // in which case we restart the track (NOT first time)
+        uiMode = nextMode;                            // and drop back into the previous UI mode
+      }
+  }        
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1113,7 +1017,7 @@ void loop() {
 
     case MODE_INIT:
       setupIRComparator();
-      setupMotorPWM();
+//     setupMotorPWM();
 //      setupFastPwm(PWM187k);
       SetTunings(1.5,0,0);
       uiMode = MODE_SELECT_TRACK;
@@ -1123,19 +1027,14 @@ void loop() {
     case MODE_SELECT_TRACK:           // file selection from menu
       #ifdef NEXTION
       {
-        NexTouch *menu[] = {
-          new NexText(1, 1, "f0"),
-          new NexSlider(1, 11, "h0"),
-          NULL
-        };
+        NexText f =  NexText(1, 1, "f0");
+        NexSlider h0 = NexSlider(1, 11, "h0");
+        NexTouch *menu[] = { &f, &h0, NULL };
 
-        menu[0]->attachPop(trackSelectCallback, menu[0]);
-        menu[1]->attachPop(writeMenuStrings, menu[1]);
+        f.attachPop(trackSelectCallback, menu[0]);
+        h0.attachPop(writeMenuStrings, menu[1]);
         
         nexLoop(menu);
-
-        delete menu[0];
-        delete menu[1];
       }
       #endif
       break;
@@ -1144,12 +1043,9 @@ void loop() {
     case MODE_PLAY:           // movie is playing
       #ifdef NEXTION
       {
-
-        #ifdef QVIEW
-          NexPicture qButton = NexPicture(2, 24, "q");
-          if (showInfo)
-            qButton.attachPop(qCallback, &qButton);
-        #endif
+        NexButton qButton = NexButton(2, 22, "q");
+        if (showInfo)
+          qButton.attachPop(qCallback, &qButton);
 
         NexButton shiftButton = NexButton(2, 23, "f");
         shiftButton.attachPop(shiftCallback, &shiftButton);
@@ -1158,37 +1054,22 @@ void loop() {
         brightnessSlider.attachPop(brightnessCallback, &brightnessSlider);
 
         NexTouch *controlListen[] = {
-          &brightnessSlider, &contrastSlider, &volumeSlider, &gamma,
-          &repeat, &closeButton, &shiftButton
-          #ifdef QVIEW
-            ,&qButton,
-          #endif
-          NULL
+          &seekerSlider, &brightnessSlider, &contrastSlider, &volumeSlider, &gamma,
+          &repeat, &closeButton, &shiftButton, &qButton, NULL
         };
         nexLoop(controlListen);
 
-        if (playbackAbsolute >= videoLength) {              // Check for end of movie
-            closeButtonCallback(NULL);                      // stop everyting
-            if (customRepeat)
-              commenceSelectedTrack(
-                customRepeat
-                #ifdef QVIEW
-                  ,false                                     // re-start if repeat active but don't re-do the Q
-                #endif
-                );
-        }
-        
+        handleEndOfVideo(MODE_PLAY);
       
         // Display elapsed time in format MM:SS
         long seconds = playbackAbsolute / singleFrame / 12.5;
         if (seconds != lastSeconds) {
           lastSeconds = seconds;
 
-          NexText timePos = NexText(2, 19, "timePos");
-          drawTime(timePos,seconds);
+          drawTime((char*)"timePos",seconds);
 
           // Adjust the seekbar position to the current playback position
-          uint32_t seekPosition = (playbackAbsolute << 8) / videoLength;      //256*(double)playbackAbsolute/(double)videoLength;
+          uint32_t seekPosition = 256.*playbackAbsolute/videoLength; //(playbackAbsolute << 8) / videoLength;      //
           if (seekPosition != lastSeekPosition) {
             seekerSlider.setValue(seekPosition);
             lastSeekPosition = seekPosition;
@@ -1207,21 +1088,23 @@ void loop() {
         OK.attachPop(qExitCallback, &OK);
         NexTouch *list[] = { &shifter, &OK, NULL };
         nexLoop(list);
+
+        handleEndOfVideo(MODE_SHIFTER);
       }
       break;
     
-    #ifdef QVIEW
-      case MODE_Q:
-        #ifdef NEXTION
-        {
-          NexTouch info = NexTouch(4, 0, "I");
-          info.attachPop(qExitCallback, &info);
-          NexTouch *qListen[] = { &info, NULL };
-          nexLoop(qListen);
-        }
-        #endif
-        break;
-    #endif
+    case MODE_Q:
+      #ifdef NEXTION
+      {
+        NexTouch info = NexTouch(4, 0, "I");
+        info.attachPop(qExitCallback, &info);
+        NexTouch *qListen[] = { &info, NULL };
+        nexLoop(qListen);
+
+        handleEndOfVideo(MODE_Q);
+      }
+      #endif
+      break;
 
     default:
       break;
