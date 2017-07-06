@@ -6,6 +6,7 @@
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
+
 // LIBRARIES...
 
 // Uses the Nextion Library at https://github.com/itead/ITEADLIB_Arduino_Nextion
@@ -30,14 +31,11 @@
 // because in this case the program busy-waits for the terminal availability before starting.
 
 #define DEBUG                     // diagnostics to serial terminal (WARNING: busy-waits)
-//#define NEXTION                   // include Nextion LCD functionality
+#define NEXTION                   // include Nextion LCD functionality
 //#define NEXTION_SERIAL_REDEFINE
 
 //#define GENERIC                   // allow NON 8-bit filesret to be played (deprecated)
 
-#ifdef DEBUG
-#define SHOW_WAV_STATS            // show the WAV file header details as it is loaded
-#endif
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // CONFIGURATION...
@@ -59,6 +57,9 @@
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
+boolean debug = false;
+boolean nextion = true;
+
 uint32_t selection = 0;             // selected track # from menu
 
 uint32_t lastSeekPosition;
@@ -66,7 +67,6 @@ long lastSeconds;
 uint32_t shiftFrame = 110;
 boolean showInfo = false;
 
-#ifdef NEXTION
 
 #include "NexHardware.h"
 #include "NexSlider.h"
@@ -79,7 +79,6 @@ boolean showInfo = false;
 
 
 
-
 // Page 2 - The control menu
 NexSlider seekerSlider = NexSlider(2, 21, "s");
 NexSlider contrastSlider = NexSlider(2, 7, "c");
@@ -88,7 +87,6 @@ NexDSButton gamma = NexDSButton(2, 15, "g");
 NexDSButton repeat = NexDSButton(2, 17, "r");
 NexButton closeButton = NexButton(2, 16, "x");
 NexButton frameButton = NexButton(2, 23, "f");
-#endif
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -99,7 +97,7 @@ NexButton frameButton = NexButton(2, 23, "f");
 #define MODE_SELECT_TRACK 3
 #define MODE_PLAY 4
 #define MODE_SHIFTER 5
-#define MODE_Q 6
+#define MODE_INFO_SCREEN 6
 
 int uiMode = MODE_TITLE_INIT;
 
@@ -187,7 +185,6 @@ boolean getFileN(int n,int s, char *name, boolean reset, boolean strip);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#ifdef NEXTION
 
 // The callback "happens" when there is a change in the scroll position of the dialog.  This
 // means that we need to update one or all of the 8 text lines with new contents. When the up
@@ -226,17 +223,15 @@ void writeMenuStrings(void * = NULL) {
   uint32_t base;
   NexVariable baseVar = NexVariable(1,14,"bx");
   if (!baseVar.getValue(&base)) {
-    #ifdef DEBUG
-      Serial.println("Failed getting base"); 
-    #endif
+    if (debug)
+      Serial.println(F("Failed getting base")); 
     base = 0;
   }
 
-  #ifdef DEBUG
-    Serial.print("Base=");
+  if (debug) {
+    Serial.print(F("Base="));
     Serial.println(base);
-  #endif
-  
+  }
 
   // Based on 'requiredUpdate' from the Nextion we either update only the top line (when up arrow pressed),
   // only the bottom line (when down arrow pressed), or we update ALL of the lines (slider dragged). The
@@ -251,29 +246,27 @@ void writeMenuStrings(void * = NULL) {
     refresh(base, updateReq);
 }
 
-#endif
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void prepareControlPage() {
 
   // Fill in the one-time-only objects on the page
-  #ifdef NEXTION
-    char nx[64];
-  
-    sprintf(nx,"g.val=%d",(int)customGamma);
-    sendCommand(nx);
-    sprintf(nx,"r.val=%d",(int)customRepeat);
-    sendCommand(nx);
-  
-    // Set "i" button ORANGE if there's no text
-    sprintf(nx,"q.pic=%d", showInfo ? 13 : 20);
-    sendCommand(nx);
-    sprintf(nx,"q.pic2=%d", showInfo ? 15 : 20);
-    sendCommand(nx);
-  
-    drawTime((char*)"tmax",videoLength/38400);     // 2 bytes/sample, 48 samples/line, 32 lines/frame, 12.5 frames/second
-  #endif
+
+  char nx[64];
+
+  sprintf(nx,"g.val=%d",(int)customGamma);
+  sendCommand(nx);
+  sprintf(nx,"r.val=%d",(int)customRepeat);
+  sendCommand(nx);
+
+  // Set "i" button ORANGE if there's no text
+  sprintf(nx,"q.pic=%d", showInfo ? 13 : 20);
+  sendCommand(nx);
+  sprintf(nx,"q.pic2=%d", showInfo ? 15 : 20);
+  sendCommand(nx);
+
+  drawTime((char*)"tmax",videoLength/38400);     // 2 bytes/sample, 48 samples/line, 32 lines/frame, 12.5 frames/second
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -282,10 +275,9 @@ void commenceSelectedTrack(boolean firstTime=true) {
 
   char nx[64];
 
-  #ifndef NEXTION
-    if (!getFileN(selection, sizeof(nx), nx, true, false))
-      selection = 0;
-  #endif    
+  // Restart from the beginning once the no-nextion version runs out of tracks to play
+  if (!nextion && !getFileN(selection, sizeof(nx), nx, true, false))
+    selection = 0;
 
   if (getFileN(selection,sizeof(nx),nx, true, false)) {
 
@@ -307,37 +299,37 @@ void commenceSelectedTrack(boolean firstTime=true) {
     play(nx);
 
     // Strip the extension off the file name and send the result (title of the track) to the nextion
-    // stord in the stn (stored track name) variable. This is loaded by the Nextion at start of page 2 display
+    // stored in the stn (stored track name) variable. This is loaded by the Nextion at start of page 2 display
     
-    #ifdef NEXTION
+    if (nextion) {
       char nx2[64];
       strcpy(nx2,"stn.txt=\"");
       strcat(nx2,nx);
       strcpy(strstr(nx2,".wav"),"\"");
       sendCommand(nx2);                           // --> stn.txt="track name"
-    #endif
+    }
     
     if (firstTime) {
 
-      playbackAbsolute = 0;   //?
+      playbackAbsolute = 0;   //?  TODO: probably removed -was just there to test/fix standalone playback
       customBrightness = 0;
       customContrast2 = 256;
       customVolume = 128;
       customGamma = true;
 
       uiMode = MODE_PLAY;
-      #ifdef NEXTION
+      if (nextion) {
         sendCommand("page 2");
-      #endif
-      prepareControlPage();
+        prepareControlPage();
+      }
     }
     
   } else {
-    #ifdef DEBUG
 
+    if (debug) {
       Serial.println(selection);
-      Serial.println(F("E: not found"));
-    #endif    
+      Serial.println(F("E: /"));
+    }
   }
   
 }
@@ -345,26 +337,21 @@ void commenceSelectedTrack(boolean firstTime=true) {
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void trackSelectCallback(void *) {
-#ifdef NEXTION
   NexVariable selectedItem = NexVariable(1,10,"si");
   if (selectedItem.getValue(&selection))
     commenceSelectedTrack(true);
-#endif
 }
 
 
 void brightnessCallback(void *) {
-#ifdef NEXTION
   uint32_t value;
   NexSlider brightnessSlider = NexSlider(2, 5, "b");
   if (brightnessSlider.getValue(&value))
     customBrightness = (int)(256.*(value-128.)/128.);
-#endif
 }
 
 
 void seekerSliderCallback(void *) {
-#ifdef NEXTION
   uint32_t seekTo;
   if (seekerSlider.getValue(&seekTo)) {
     long seekPos = (long) (
@@ -372,37 +359,28 @@ void seekerSliderCallback(void *) {
       ((double)videoLength/singleFrame));
     resetStream(seekPos*singleFrame);
   }
-#endif
 }
 
 
 void contrastCallback(void *) {
-#ifdef NEXTION
   uint32_t value;
   if (contrastSlider.getValue(&value))
     customContrast2 = value << 1;
-#endif
 }
 
 
 void volumeCallback(void *) {
-#ifdef NEXTION
   volumeSlider.getValue(&customVolume);
-#endif
 }
 
 
 void gammaCallback(void *) {
-#ifdef NEXTION
   gamma.getValue(&customGamma);
-#endif
 }
 
 
 void repeatCallback(void *) {
-#ifdef NEXTION
   repeat.getValue(&customRepeat);
-#endif
 }
 
 
@@ -461,42 +439,33 @@ void qInit(char *name) {
        p--;
      }
      strcpy(p,"\"");
-     #ifdef NEXTION
-      sendCommand(nx);
-      #endif
+      if (nextion)
+        sendCommand(nx);
       }
   explain.close();
 }
 
 
 void qCallback(void *) {
-  #ifdef NEXTION
-    sendCommand("page 4");
-  #endif
-  uiMode = MODE_Q;
+  sendCommand("page 4");
+  uiMode = MODE_INFO_SCREEN;
 }
 
 void qExitCallback(void *) {
-  #ifdef NEXTION
-    sendCommand("page 2");
-  #endif
+  sendCommand("page 2");
   uiMode = MODE_PLAY;
 }
 
 
 void shifterCallback(void *) {
-#ifdef NEXTION
   NexVariable shift = NexVariable(3, 1, "s");
   shift.getValue(&shiftFrame);
-#endif
 }
 
 
 void shiftCallback(void *) {
   // Enter shifter page
-  #ifdef NEXTION
-    sendCommand("page 3");
-  #endif
+  sendCommand("page 3");
   // TODO: calc H, V and init H,V,S
   uiMode = MODE_SHIFTER;
 }
@@ -504,27 +473,20 @@ void shiftCallback(void *) {
 
 void titleCallback(void *) {
 
-  #ifdef NEXTION
-    sendCommand("page 1");        // --> MENU
-  #endif
+  sendCommand("page 1");        // --> MENU
   
   // Count the number of menu items and then set the maximum range for the slider
-  // We subtract 9 from the count because there are 9 lines already visible in the window
+  // We subtract 8 from the count because there are 9 lines already visible in the window
 
   int menuSize = countFiles();
-  #ifdef DEBUG
-    Serial.println(menuSize);
-  #endif
+//  if (debug)
+//    Serial.println(menuSize);
   
   char nx[64];
   sprintf(nx,"h0.maxval=%d", menuSize > 9 ? menuSize-8 : 0);
-  #ifdef NEXTION
-    sendCommand(nx);
-  #endif
+  sendCommand(nx);
   
-  #ifdef NEXTION
-    writeMenuStrings();           // defaults to REFRESH_ALL_LINES, so screen is populated
-  #endif
+  writeMenuStrings();           // defaults to REFRESH_ALL_LINES, so screen is populated
   uiMode = MODE_INIT;
 }
 
@@ -532,71 +494,44 @@ void titleCallback(void *) {
 // The Arduino starts with a one-time call to setup(), so this is where the Televisor is initialised.
 // That's followed by calls to loop() whenever there is free time.
 
+
 void setup() {
 
-  #ifdef DEBUG
-    Serial.begin(9600);
-    while (!Serial)
-      SysCall::yield();
-    Serial.println(F("!"));
+  Serial.begin(9600);
 
-//    //debug
-//    uint8_t temp[32];
-//    Serial.print("bogus bytes: ");
-//    Serial.println(nexSerial.readBytes((char *)temp, sizeof(temp)));
-//  
-//    uint32_t base;
-//    NexVariable baseVar = NexVariable(1,14,"bx");
-//    if (!baseVar.getValue(&base)) {
-//      Serial.println("Failed getting baseX"); 
-//      base = 0;
-//      delay(1000);
-//    }
-
+  // Determine if there is debugging is required by looking for the presence of a character in the serial
+  // buffer. Thus, we don't "hang" the code if there's no serial port.  It won't matter if we actually write
+  // to the port if there's nothing there.
   
-  #endif
+  while (!Serial.available() && millis() < 2000);
+  
+  if (Serial.available()) {
+    while (Serial.available())
+      Serial.read();
+    Serial.println(F("DEBUG"));
+    debug = true;
+  }
 
+ debug = true; //tmp
   // Setup access to the SD card
   #define SD_CS_PIN 4
   pinMode(SS, OUTPUT);
   if (!nbtvSD.begin(SD_CS_PIN)) {
-    #ifdef DEBUG
+    if (debug)
       Serial.println(F("SD failed!"));
-    #endif
   }
 
 
-#ifdef NEXTION
+  nextion = nexInit();
 
-//  delay(3000);
-  
-  
-  nexInit();
-
-  //////////////////////////////////////////////////////////////////////////////////////////
-  // BUG:  I have no idea why the delay below is needed, but the communication with Nextion
-  // fails if it's not there - specifically, the trackSlider.setMaxValue(...) fails.  This code
-  // has generic communication problems with the Nextion but seemingly ONLY ON STARTUP - 
-  // once the scrolling system is going, everything seems hunky dory.  So, somewhere there's
-  // a mistake by yours truly...
-  
-//  while (nexSerial.available())
-//    nexSerial.read();
-    
-  //
-  //////////////////////////////////////////////////////////////////////////////////////////
-
-
-  // Page 2 - controls
-  contrastSlider.attachPop(contrastCallback, &contrastSlider);
-  volumeSlider.attachPop(volumeCallback, &volumeSlider);
-  gamma.attachPush(gammaCallback, &gamma);
-  repeat.attachPush(repeatCallback, &repeat);
-  closeButton.attachPop(closeButtonCallback, &closeButton);
-  seekerSlider.attachPop(seekerSliderCallback, &seekerSlider);
-  
-  
-#endif
+  if (nextion) {
+    contrastSlider.attachPop(contrastCallback, &contrastSlider);
+    volumeSlider.attachPop(volumeCallback, &volumeSlider);
+    gamma.attachPush(gammaCallback, &gamma);
+    repeat.attachPush(repeatCallback, &repeat);
+    closeButton.attachPop(closeButtonCallback, &closeButton);
+    seekerSlider.attachPop(seekerSliderCallback, &seekerSlider);
+  }  
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -654,9 +589,9 @@ boolean getFileN(int n,int s, char *name, boolean hunt = true, boolean strip = t
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void composeMenuItem(int item,int s, char *p, boolean hunt) {
-    sprintf(p,"%2d ",item+1);
-    if (!getFileN(item,s-3,p+3, hunt))
-      *p = 0;
+  sprintf(p,"%2d ",item+1);
+  if (!getFileN(item,s-3,p+3, hunt))
+    *p = 0;
 }
 
 
@@ -767,7 +702,7 @@ void setupIRComparator() {
 
 ISR(ANALOG_COMP_vect) {
 
-//  Serial.println("IR");
+//  Serial.println(F("IR"));
   
   irAbsolute = playbackAbsolute;
 
@@ -804,14 +739,14 @@ ISR(ANALOG_COMP_vect) {
           SetTunings(1.5,.35,1);                                  // The PID that does the regular synching
           phasePid++;
   
-          #ifdef NEXTION
+          if (nextion) {
             sendCommand("t5.txt=\"PID switching now\"");
             char out[40];
             strcpy(out,"t6.txt=\"");
             sprintf(out+8,"deltaSample=%d",(int)deltaSample);
             strcat(out,"\"");
             sendCommand(out);
-          #endif
+          }
                     
           OCR0B = 0;                                              // halt motor spinup
           lastTime =  ((double)playbackAbsolute) / singleFrame;
@@ -965,10 +900,8 @@ boolean wavInfo(char* filename) {
 
 void play(char* filename, unsigned long seekPoint) {
 
-  #ifdef DEBUG
+  if (debug)
     Serial.println(filename);
-  #endif
-
 
   if (wavInfo(filename)) {
   
@@ -1130,7 +1063,6 @@ ISR(TIMER3_OVF_vect) {
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#ifdef NEXTION
 void drawTime(char *name, int sec) {
 
     int s = sec % 60;
@@ -1140,7 +1072,6 @@ void drawTime(char *name, int sec) {
     sprintf(cmd,"%s.txt=\"%2d:%02d\"",name,m,s);
     sendCommand(cmd);
 }
-#endif
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1152,23 +1083,16 @@ void handleEndOfVideo(int nextMode) {
 
   if (playbackAbsolute >= videoLength) {              // Check for end of movie
 
-      #ifndef NEXTION
+      if (!nextion)
         selection++;                                  // if there's no nextion/UI, cycle to next track
-      #endif
-      
-      
+
       closeButtonCallback(NULL);                      // stop everyting (same as 'pressing' stop button)
-      #ifdef NEXTION
-      if (customRepeat) {                             // BUT we might have the repeat button ON
-      #endif
+
+      if (!nextion || customRepeat) {                 // BUT we might have the repeat button ON
         commenceSelectedTrack(false);                 // in which case we restart the track (NOT first time)
         uiMode = nextMode;                            // and drop back into the previous UI mode
-      #ifdef NEXTION
       }
-      #endif
   }
-
-          
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1177,29 +1101,31 @@ void loop() {
   
   switch (uiMode) {
 
+    //---------------------------------------------------------------------------------------------------------------------------------
+
     case MODE_TITLE_INIT:
-    #ifdef NEXTION
-      sendCommand("bkcmd=2");
-      sendCommand("page 0");
-    #endif
-      uiMode = MODE_TITLE;
+
+      if (nextion) {
+        sendCommand("bkcmd=2");
+        sendCommand("page 0");
+        uiMode = MODE_TITLE;
+      } else
+        uiMode = MODE_INIT;
       break;
 
+    //---------------------------------------------------------------------------------------------------------------------------------
+
     case MODE_TITLE:
-      {
-        #ifdef NEXTION
-          NexPage titleScreen = NexPage(0, 0, "T");
-          titleScreen.attachPop(titleCallback, &titleScreen);
-          NexTouch *titleList[] = { &titleScreen, NULL };
-          nexLoop(titleList);
-        
-        #else
-        
-          uiMode = MODE_INIT;
-          
-        #endif
-      }      
+
+      if (nextion) {
+        NexPage titleScreen = NexPage(0, 0, "T");
+        titleScreen.attachPop(titleCallback, &titleScreen);
+        NexTouch *titleList[] = { &titleScreen, NULL };
+        nexLoop(titleList);
+      }
       break;
+
+    //---------------------------------------------------------------------------------------------------------------------------------
 
     case MODE_INIT:
 
@@ -1213,10 +1139,11 @@ void loop() {
       uiMode = MODE_SELECT_TRACK;
       break;
 
+    //---------------------------------------------------------------------------------------------------------------------------------
 
     case MODE_SELECT_TRACK:           // file selection from menu
-      #ifdef NEXTION
-      {
+
+      if (nextion) {
         NexText f =  NexText(1, 1, "f0");
         NexSlider h0 = NexSlider(1, 11, "h0");
         NexTouch *menu[] = { &f, &h0, NULL };
@@ -1225,21 +1152,20 @@ void loop() {
         h0.attachPop(writeMenuStrings, menu[1]);
         
         nexLoop(menu);
-      }
-
-      #else
-
+      
+      } else {
+        
         selection = 0;
         commenceSelectedTrack(true);
         customRepeat = true;            // in this case, play all tracks and repeat
-      
-      #endif
+      }
       break;
 
+    //---------------------------------------------------------------------------------------------------------------------------------
 
     case MODE_PLAY:           // movie is playing
-      #ifdef NEXTION
-      {
+
+      if (nextion) {
         NexButton qButton = NexButton(2, 22, "q");
         if (showInfo)
           qButton.attachPop(qCallback, &qButton);
@@ -1255,61 +1181,60 @@ void loop() {
           &repeat, &closeButton, &shiftButton, &qButton, NULL
         };
         nexLoop(controlListen);
-      }
-      #endif
 
-      handleEndOfVideo(MODE_PLAY);
+        // Display elapsed time in format MM:SS
+        long seconds = playbackAbsolute / singleFrame / 12.5;
+        if (seconds != lastSeconds) {
+          lastSeconds = seconds;
 
-      #ifdef NEXTION
-      {
-          // Display elapsed time in format MM:SS
-          long seconds = playbackAbsolute / singleFrame / 12.5;
-          if (seconds != lastSeconds) {
-            lastSeconds = seconds;
-  
-            drawTime((char*)"timePos",seconds);
-  
-            // Adjust the seekbar position to the current playback position
-            uint32_t seekPosition = 256.*playbackAbsolute/videoLength; //(playbackAbsolute << 8) / videoLength;      //
-            if (seekPosition != lastSeekPosition) {
-              seekerSlider.setValue(seekPosition);
-              lastSeekPosition = seekPosition;
-            }
-            
+          drawTime((char*)"timePos",seconds);
+
+          // Adjust the seekbar position to the current playback position
+          uint32_t seekPosition = 256.*playbackAbsolute/videoLength; //(playbackAbsolute << 8) / videoLength;      //
+          if (seekPosition != lastSeekPosition) {
+            seekerSlider.setValue(seekPosition);
+            lastSeekPosition = seekPosition;
           }
+        }
       }
-      #endif
-        
+
+      handleEndOfVideo(MODE_PLAY);      
       break;
 
+    //---------------------------------------------------------------------------------------------------------------------------------
+
     case MODE_SHIFTER:
-      {
-        #ifdef NEXTION
+
+      if (nextion) {
         NexPicture shifter = NexPicture(3, 14, "p0");
         shifter.attachPop(shifterCallback, &shifter);
         NexButton OK = NexButton(3, 7, "OK");
         OK.attachPop(qExitCallback, &OK);
         NexTouch *list[] = { &shifter, &OK, NULL };
         nexLoop(list);
-        #endif
+
         handleEndOfVideo(MODE_SHIFTER);
       }
       break;
+
+    //---------------------------------------------------------------------------------------------------------------------------------
+
+    case MODE_INFO_SCREEN:
     
-    case MODE_Q:
-      #ifdef NEXTION
-      {
+      if (nextion) {
         NexTouch info = NexTouch(4, 0, "I");
         info.attachPop(qExitCallback, &info);
         NexTouch *qListen[] = { &info, NULL };
         nexLoop(qListen);
 
-        handleEndOfVideo(MODE_Q);
+        handleEndOfVideo(MODE_INFO_SCREEN);
       }
-      #endif
       break;
 
+    //---------------------------------------------------------------------------------------------------------------------------------
+
     default:
+      // ? how
       break;
     
   }
