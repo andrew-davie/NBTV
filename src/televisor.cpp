@@ -100,10 +100,9 @@ volatile unsigned long lastDetectedIR = 0;
 long position;        // WAV file start of data chunk (for rewind/seek positioning)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-volatile boolean haltVideo = false;
-volatile boolean haltStreaming = false;
-volatile boolean haltPointer = false;
-volatile boolean readyToGo = false;
+
+//volatile boolean haltVideo = false;     // halts video playback in interrupt (if true)
+//volatile boolean readyToGo = false;     // starts playback after IR interrupt (if true)
 
 
 // PID (from http://brettbeauregard.com/blog/2011/04/improving-the-beginners-pid-introduction/)
@@ -161,8 +160,12 @@ ISR(ANALOG_COMP_vect)
 //  interrupts(); // not sure why this is here, supposedly turns on the interupts but they were not off
     lastDetectedIR = irAbsolute; // store for use on next cycle
 
-    if (readyToGo)
-        haltPointer = haltStreaming = haltVideo = readyToGo = false; // stop some stuff?
+    // Re-start of playback of video by toggling the halt OFF if ready is ON.
+
+    //if (readyToGo) {
+    //    haltVideo = false;
+    //    readyToGo = false;
+    //}
 
     // This next bit is super cool.  The PID synchronises the disc speed to 12.5 Hz (indirectly through the singleFrame
     // value, which is a count of #samples per rotation at 12.5 Hz).  Since the disc and the playback of the video
@@ -270,7 +273,7 @@ void writeMenuStrings(void * = NULL) {
     uint32_t updateReq;
     NexVariable requiredUpdate = NexVariable(1, 15, "ru");
     if (!requiredUpdate.getValue(&updateReq))
-        updateReq = REFRESH_ALL_LINES;                                                           // do all as a fallback
+        updateReq = REFRESH_ALL_LINES;                // do all as a fallback
 
     // Get the "base" from the Nextion. This is the index, or starting file # of the first line
     // in the selection dialog. As we scroll up, this decreases to 0. As we scroll down, it
@@ -322,7 +325,7 @@ void prepareControlPage() {
     sprintf(nx, "q.pic2=%d", showInfo ? 15 : 20);
     sendCommand(nx);
 
-    drawTime((char *) "tmax", videoLength / 38400);                         // 2 bytes/sample, 48 samples/line, 32 lines/frame, 12.5 frames/second
+    drawTime((char *) "tmax", videoLength / 38400);   // 2 bytes/sample, 48 samples/line, 32 lines/frame, 12.5 frames/second
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -338,25 +341,19 @@ void commenceSelectedTrack(boolean firstTime = true) {
     if (getFileN(selection, sizeof( nx ), nx, true, false)) {
 
         if (firstTime) {
-            customRepeat = false;                                       // 0 on new track, or keep existing if repeating
-            qInit(nx);                                                  // read and buffer INFO lines --> nextion
+            customRepeat = false;                     // 0 on new track, or keep existing if repeating
+            qInit(nx);                                // read and buffer INFO lines --> nextion
         }
-
 
         lastSeconds =
             lastSeekPosition = 99999;
 
-
-
-        setupMotorPWM();  // turn motor on at speed to spool up
-
-        setupFastPwm(PWM187k); // get pwm ready for light source
+        setupMotorPWM();                              // turn motor on at speed to spool up
+        setupFastPwm(PWM187k);                        // get pwm ready for light source
 
         play(nx);
 
-        digitalWrite(PIN_SOUND_ENABLE, HIGH);                                                                                   // enable amplifier
-
-
+        //digitalWrite(PIN_SOUND_ENABLE, HIGH);         // enable amplifier
 
         // Strip the extension off the file name and send the result (title of the track) to the nextion
         // stored in the stn (stored track name) variable. This is loaded by the Nextion at start of page 2 display
@@ -478,7 +475,7 @@ void stopButtonCallback(void *) {
 
     TCCR4C |= 0x09;
 
-    uiMode = MODE_TITLE_INIT;
+    uiMode = nextion ? MODE_TITLE_INIT : MODE_INIT;
 }
 
 
@@ -673,14 +670,10 @@ void composeMenuItem(int item, int s, char *p, boolean hunt) {
 
 void resetStream(long seeker) {
 
-    digitalWrite(PIN_SOUND_ENABLE, LOW);      // disable amplifier
+    TIMSK3 &= ~_BV(TOIE3);                            // DISABLE playback interrupt
+    digitalWrite(PIN_SOUND_ENABLE, LOW);              // disable amplifier
 
-    haltVideo =
-        haltStreaming = true;
-
-    nbtv.seek(seeker);                                      // seek to new position
-
-    haltPointer = true;
+    nbtv.seek(seeker);                                // seek to new position
 
     streamAbsolute = playbackAbsolute = seeker;
     lastDetectedIR = playbackAbsolute - singleFrame + shiftFrame;
@@ -691,10 +684,9 @@ void resetStream(long seeker) {
 
     nbtv.read((void *) circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE);                         // pre-fill the circular buffer so it's valid
 
-    readyToGo = true;
+    digitalWrite(PIN_SOUND_ENABLE, HIGH);             // enable amplifier
 
-    digitalWrite(PIN_SOUND_ENABLE, HIGH);      // enable amplifier
-
+    TIMSK3 |= _BV(TOIE3);                             // ENABLE playback interrupt
 }
 
 
@@ -733,7 +725,7 @@ void setupIRComparator() {
         | bit(ACIE)                                   // re-enable interrupts on AC
     ;
 
-    SREG |= bit(SREG_I);                              // GLOBALLY enable interrupts
+//    SREG |= bit(SREG_I);                              // GLOBALLY enable interrupts
 }
 
 
@@ -837,27 +829,27 @@ void play(char *filename, unsigned long seekPoint) {
         // Uses /1 divisor, but counting up to 'resolution' each time  --> frequency!
         // This is timer 3, which is handling the playback of video and audio
 
-        ICR3 = (int) ( ( 16000000. / sampleRate ) + 0.5 );                                                 // playback frequency
+        ICR3 = (int) ( ( 16000000. / sampleRate ) + 0.5 );    // playback frequency
 
         TCCR3A =
-            _BV(WGM31)                                                                         // Fast PWM (n1)   --> n3n2n1 == 111 --> Fast PWM
-            | _BV(COM3A1)                                                                         // compare output mode = nA1nA0 = 10 --> Clear OCnA/OCnB/OCnC on compare match
+            _BV(WGM31)                                // Fast PWM (n1)   --> n3n2n1 == 111 --> Fast PWM
+            | _BV(COM3A1)                             // compare output mode = nA1nA0 = 10 --> Clear OCnA/OCnB/OCnC on compare match
             // (set output to low level); match is when the counter == ICR3
         ;
 
         TCCR3B =
-            _BV(WGM33)                                                                         // Fast PWM (n3) see above
-            | _BV(WGM32)                                                                         // Fast PWM (n2) see above
-            | _BV(CS30)                                                                         // Clock select = /1 (no scaling) see pp.133 ATmega32U4 manual for table
+            _BV(WGM33)                                // Fast PWM (n3) see above
+            | _BV(WGM32)                              // Fast PWM (n2) see above
+            | _BV(CS30)                               // Clock select = /1 (no scaling) see pp.133 ATmega32U4 manual for table
         ;
 
         TIMSK3 |= (
             0
-//			| _BV(ICIE3)                                                                         // ENABLE input capture interrupt
-            | _BV(TOIE3)                                                                         // ENABLE timer overflow interrupt (usage???)
+//			| _BV(ICIE3)                                  // ENABLE input capture interrupt
+            | _BV(TOIE3)                              // ENABLE timer overflow interrupt (usage???)
             );
 
-        SREG |= bit(SREG_I);                                                 // GLOBALLY enable interrupts
+        SREG |= bit(SREG_I);                          // GLOBALLY enable interrupts
     }
 }
 
@@ -870,48 +862,46 @@ void play(char *filename, unsigned long seekPoint) {
 
 static volatile unsigned long audio = 0x8000;       // "0x8000" is midway through range
 static volatile long bright = 0;
-byte toggle = 0;
+static volatile boolean alreadyStreaming = false;
+
+//byte toggle = 0;
 
 ISR(TIMER3_OVF_vect) {
     // assume 8-bit, NBTV WAV file format
 
-    if (!haltVideo) {
+//    if (!haltVideo) {
 
-        // Audio is pre-set to MAXIMUM volume - so we can't get any louder - only quieter
-        // so 0xFF multiplier is acutaly 1x
+    // Audio is pre-set to MAXIMUM volume - so we can't get any louder - only quieter
+    // so 0xFF multiplier is acutaly 1x
 
-        audio = ( (int) ( circularAudioVideoBuffer[pbp + 1] - 0x80 ) ) * logVolume + 0x8000;
+    audio = ( (int) ( circularAudioVideoBuffer[pbp + 1] - 0x80 ) ) * logVolume + 0x8000;
 
-        bright = circularAudioVideoBuffer[pbp] * customContrast2;
-        bright >>= 8;
-        bright += customBrightness;
+    bright = circularAudioVideoBuffer[pbp] * customContrast2;
+    bright >>= 8;
+    bright += customBrightness;
 
-        if (bright < 0)
-            bright = 0;
-        else if (bright > 255)
-            bright = 255;
+    if (bright < 0)
+        bright = 0;
+    else if (bright > 255)
+        bright = 255;
 
+    playbackAbsolute += 2;
+    pbp += 2;
 
-    } else {
+    if (pbp >= CIRCULAR_BUFFER_SIZE)
+        pbp = 0;
 
-        if (audio != 0x8000 && ( toggle++ & 31 ) == 0 )
-            audio += ( audio > 0x8000 ) ? -1 : 1;
-    }
-
-    if (!haltPointer) {
-
-        playbackAbsolute += 2;
-        pbp += 2;
-
-        if (pbp >= CIRCULAR_BUFFER_SIZE)
-            pbp = 0;
-    }
+//       else {
+//
+//        if (audio != 0x8000 && ( toggle++ & 31 ) == 0 )
+//            audio += ( audio > 0x8000 ) ? -1 : 1;
+//    }
 
     OCR4A = customGamma ? pgm_read_byte(&gamma8[bright]) : (byte) bright;
-    DDRC |= 0x80;                                     // Set Output Mode C7
-    TCCR4A = 0x82;                                    // Activate channel A
+    DDRC |= 0x80;                                       // Set Output Mode C7
+    TCCR4A = 0x82;                                      // Activate channel A
 
-    OCR4D = (byte) ( audio >> 8 );                                                                                                    // Write the audio to pin 6 PWM duty cycle
+    OCR4D = (byte) ( audio >> 8 );                                                                                                      // Write the audio to pin 6 PWM duty cycle
     DDRD |= 0x80;
     TCCR4C |= 0x09;
 
@@ -926,14 +916,12 @@ ISR(TIMER3_OVF_vect) {
     // routine is streaming data from the SD.  The hope is that we can read data from the SD to the buffer
     // fast enough to keep the playback happy. If we can't - then we get glitches on the screen/audio
 
-    static volatile boolean alreadyStreaming = false;
-
-    if (!haltStreaming && !alreadyStreaming) {
-        alreadyStreaming = true;                      // prevent THIS code from interrupting itself...
-        interrupts();                                 // but allow other interrupts (the audio/video write)
+    if (!alreadyStreaming) {
+        alreadyStreaming = true;                        // prevent THIS *part of the code* from interrupting itself...
+        interrupts();                                   // but allow this interrupt to interrupt itself
 
         unsigned int bytesToStream = playbackAbsolute - streamAbsolute;
-        if (bytesToStream > 32) {                     // limit reads by delaying (if required)
+        if (bytesToStream > 31) {                       // might be more efficient reading larger blocks!
 
             void *dest = (void *) ( circularAudioVideoBuffer + bufferOffset );
             bufferOffset += bytesToStream;
@@ -947,7 +935,7 @@ ISR(TIMER3_OVF_vect) {
 
         alreadyStreaming = false;
     }
-
+//    } //!haltVideo
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -994,45 +982,31 @@ void loop() {
 
     case MODE_TITLE_INIT:
 
-        if (nextion) {
-            sendCommand("bkcmd=2");
-            sendCommand("page 0");
-            uiMode = MODE_TITLE;
-        }
-        else {
-            uiMode = MODE_INIT;
-        }
+        sendCommand("bkcmd=2");                       // Nextion: don't confirm commands!
+        sendCommand("page 0");
+        uiMode = MODE_TITLE;
         break;
 
     //--------------------------------------------------------------------------------------------------------------------------
 
     case MODE_TITLE:
+    {
 
-        if (nextion) {
-            NexPage titleScreen = NexPage(0, 0, "T");
-            titleScreen.attachPop(titleCallback, &titleScreen);
-            NexTouch *titleList[] = {
-                &titleScreen, NULL
-            };
-            nexLoop(titleList);
-        }
-        break;
+        NexPage titleScreen = NexPage(0, 0, "T");
+        titleScreen.attachPop(titleCallback, &titleScreen);
+        NexTouch *titleList[] = {
+            &titleScreen, NULL
+        };
+        nexLoop(titleList);
+    }
+    break;
 
     //--------------------------------------------------------------------------------------------------------------------------
 
     case MODE_INIT:
 
-        haltVideo     = false;
-        haltStreaming = false;
-
-        volumeCallback(NULL);     //initialise volume
-
-
-        setupIRComparator(); // looka like it enables the comparator
-        // reset variables - this is redundant? done in play() function
-        lastTime   = 0;//( (double)playbackAbsolute ) / singleFrame;
-        lastErr    = 0;
-        integral   = 0;
+        volumeCallback(NULL);                         // initialise volume
+        setupIRComparator();                          // looka like it enables the comparator
         uiMode = MODE_SELECT_TRACK;
         break;
 
@@ -1041,7 +1015,7 @@ void loop() {
     case MODE_SELECT_TRACK:                           // file selection from menu
 
         if (nextion) {
-            boolean skipWaste = 0;
+            bool skipWaste = false;
 
             NexText f =  NexText(1, 1, "f0");
             NexSlider h0 = NexSlider(1, 11, "h0");
@@ -1116,21 +1090,20 @@ void loop() {
 
                 // Adjust the seekbar position to the current playback position
                 uint32_t seekPosition = 256. * playbackAbsolute / videoLength;                                                                                                 //(playbackAbsolute << 8) / videoLength;      //
-                if (seekPosition != lastSeekPosition) {
-                    //seekerSlider.setValue(seekPosition); // delay bug here so use below to work around
-                    {     // 27556-27400=164 // 2.3ms
-              #define NUMBUFSIZE 10
-              #define COMMAND "s.val="
-                        char buf[NUMBUFSIZE];
-                        char cmd[sizeof( "s.val=" ) + sizeof( NUMBUFSIZE )] = {
-                            COMMAND
-                        };
-                        utoa(seekPosition, buf, NUMBUFSIZE);
-                        strcat(cmd, buf);
-                        sendCommand(cmd);
-                    }
-                    lastSeekPosition = seekPosition;
+                if (seekPosition != lastSeekPosition)
+                //seekerSlider.setValue(seekPosition); // delay bug here so use below to work around
+                {         // 27556-27400=164 // 2.3ms
+
+//              #define NUMBUFSIZE 10
+//              #define COMMAND "s.val="
+//                        char cmd[sizeof( COMMAND ) + NUMBUFSIZE] = {
+//                            COMMAND
+//                        };
+                    char cmd[] = "s.val=XXXXXXXXX";
+                    utoa(seekPosition, cmd + 6, 10);
+                    sendCommand(cmd);
                 }
+                lastSeekPosition = seekPosition;
             }
             //digitalWrite(DEBUG_PIN, LOW);
         }
