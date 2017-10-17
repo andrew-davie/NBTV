@@ -12,7 +12,7 @@
 // Arduino pinout/connections:  https://www.taswegian.com/NBTV/forum/viewtopic.php?f=28&t=2298
 //                              Pname  Description
 #define PIN_MOTOR        3   // D3     Motor PWM Pin D3
-#define SD_CS_PIN        4   // D4     Chip select for SD card   
+#define SD_CS_PIN        4   // D4     Chip select for SD card
 #define PIN_SOUND_ENABLE 5   // D5     Enable sudio amp when high
 //                           // D7     IR_IN, opto sensor - Analog comparator
 #define DEBUG_PIN       12   // D12    Used for scoping performance
@@ -25,7 +25,7 @@
 // To Nextion TX pin         // RX1    Get serial from Nextion
 
 // Special pin defines
-#define PWM187k 1   // 187500 Hz pwm frequency for TIMER4 on pin 
+#define PWM187k 1   // 187500 Hz pwm frequency for TIMER4 on pin
 
 // *************************** CONFIGURATION... *******************************************************************************
 // I think this doesnt work because either too much ram used or my fasrer round robin
@@ -45,4 +45,3 @@
 
 #include <SdFat.h>
 #endif
-

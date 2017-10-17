@@ -11,12 +11,16 @@
 #include "NexDualStateButton.h"
 #include "NexPicture.h"
 #include "NexPage.h"
-#define   NEXTION                   // include Nextion LCD functionality
+
+#define NEXTION                                       // include Nextion LCD functionality
+#define DEBUG_TIMING                                  // hardware pin toggle debugging
+
+
 // 1: see: http://support.iteadstudio.com/support/discussions/topics/11000012238
 //    --> Delete NexUpload.h and NexUpload.cpp from Nextion library folder
 // 2. Disable DEBUG_SERIAL_ENABLE in NexConfig.h
 // 3. set   #define nexSerial Serial1 in NexConfig.h
-// NexHardware.cpp change  dbSerialBegin(9600);    nexSerial.begin(9600); 
+// NexHardware.cpp change  dbSerialBegin(9600);    nexSerial.begin(9600);
 //                  to   dbSerialBegin(115200);  nexSerial.begin(115200); to
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -32,26 +36,26 @@
 #define MODE_INFO_SCREEN 6
 
 // Puublic Variables
-extern boolean       nextion;
-extern boolean       showInfo;
-extern int           uiMode;
+extern boolean nextion;
+extern boolean showInfo;
+extern int uiMode;
 
 // Puublic Classes
-extern NexSlider     seekerSlider;
-extern NexSlider     contrastSlider;
-extern NexSlider     volumeSlider;
-extern NexDSButton   gamma;
-extern NexDSButton   repeat;
-extern NexButton     stopButton;
-extern NexButton     frameButton;//????
+extern NexSlider seekerSlider;
+extern NexSlider contrastSlider;
+extern NexSlider volumeSlider;
+extern NexDSButton gamma;
+extern NexDSButton repeat;
+extern NexButton stopButton;
+extern NexButton frameButton;    //????
 
 // these wont need externing later?
 extern NexTouch *controlListen[];
 
 extern NexSlider brightnessSlider;
 extern NexButton shiftButton;
-extern NexButton qButton;  
-  
+extern NexButton qButton;
+
 // Calback prototypes
 void contrastCallback     (void *);
 void volumeCallback       (void *);
@@ -69,4 +73,3 @@ void SetupListenBuffer(void);
 void nextionAttach(void);
 
 #endif
-
