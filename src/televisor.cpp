@@ -39,25 +39,25 @@ boolean nexAttached;    //?????
 int customBrightness = 0;
 uint32_t customGamma = true;                          // technically this could/should be volatile
 uint32_t customRepeat = 0;
-volatile long customContrast2 = 256;                  // a X.Y fractional  (8 bit fractions) so 256 = 1.0f   and 512 = 2.0f
+/*volatile*/ long customContrast2 = 256;                  // a X.Y fractional  (8 bit fractions) so 256 = 1.0f   and 512 = 2.0f
 
 byte logVolume = 0;
 
 //volatile this probably slows it down a lot and is not needed especialy if it is coded right
 // How so?
 
-volatile byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
-volatile unsigned long playbackAbsolute;
-volatile unsigned short pbp = 0;
+/*volatile*/ byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
+/*volatile*/ unsigned long playbackAbsolute;
+/*volatile*/ unsigned short pbp = 0;
 
 unsigned long videoLength;
-volatile unsigned long streamAbsolute;
-volatile unsigned int bufferOffset = 0;
+/*volatile*/ unsigned long streamAbsolute;
+/*volatile*/ unsigned int bufferOffset = 0;
 unsigned long sampleRate;
 long singleFrame;
 short bytesPerSample;               // bytes per sample
 
-volatile unsigned long lastDetectedIR = 0;
+/*volatile*/ unsigned long lastDetectedIR = 0;
 
 File nbtv;
 SdFat nbtvSD;
@@ -831,9 +831,9 @@ void play(char *filename, unsigned long seekPoint) {
 // and to the speaker. Handles 16-bit and 8-bit format sample data and adjust brightness, contrast,
 // and volume on-the-fly.
 
-static volatile unsigned long audio = 0x8000;       // "0x8000" is midway through range
-static volatile long bright = 0;
-static volatile boolean alreadyStreaming = false;
+/*static volatile*/ unsigned short audio;       // "0x8000" is the "zero" point
+/*static volatile*/ long bright = 0;
+/*static volatile*/ boolean alreadyStreaming = false;
 
 
 ISR(TIMER3_OVF_vect) {
@@ -842,7 +842,7 @@ ISR(TIMER3_OVF_vect) {
     // Audio is pre-set to MAXIMUM volume - so we can't get any louder - only quieter
     // so 0xFF multiplier is acutaly 1x
 
-    audio = ( (int) ( circularAudioVideoBuffer[pbp + 1] - 0x80 ) ) * logVolume + 0x8000;
+    audio = 0x8000 + ( circularAudioVideoBuffer[pbp + 1] - 0x80 ) * logVolume;
 
     bright = circularAudioVideoBuffer[pbp] * customContrast2;
     bright >>= 8;
