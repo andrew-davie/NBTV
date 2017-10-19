@@ -171,7 +171,7 @@ ISR(ANALOG_COMP_vect)
     //Serial.println(pbDelta);  // max about 3100 nominal about 75 shiftFrame = 75 so thats the matching number!
 
     double sError = ( deltaSample - ( 3072 - 7 ) );   // spead error - proportional with target of 3072 - bodge to get P perfectly balanced
-    double fError = ( pbDelta - 75 );                 // frame error
+    double fError = ( pbDelta - 120 + 96 );                 // frame error
 
     byte pidx = calculatePI(sError, fError);          // write the new motor PI speed
 
@@ -325,6 +325,10 @@ void commenceSelectedTrack(boolean firstTime = true) {
         setupFastPwm(PWM187k);                        // get pwm ready for light source
 
         play(nx);
+
+        digitalWrite(PIN_SOUND_ENABLE, HIGH);                                                                                   // enable amplifier
+
+
 
         // Strip the extension off the file name and send the result (title of the track) to the nextion
         // stored in the stn (stored track name) variable. This is loaded by the Nextion at start of page 2 display
@@ -540,6 +544,7 @@ void setup() {
     // Turn OFF the sound amp
     pinMode(PIN_SOUND_ENABLE, OUTPUT);
     digitalWrite(PIN_SOUND_ENABLE, LOW);
+//    digitalWrite(PIN_SOUND_ENABLE, HIGH);
 
 #ifdef DEBUG_TIMING
     pinMode(DEBUG_PIN, OUTPUT);
@@ -692,7 +697,8 @@ void setupIRComparator() {
         | bit(ACIE)                                   // re-enable interrupts on AC
     ;
 
-//    SREG |= bit(SREG_I);                            // GLOBALLY enable interrupts
+// maybe....
+    SREG |= bit(SREG_I);                            // GLOBALLY enable interrupts
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -829,7 +835,6 @@ static volatile unsigned long audio = 0x8000;       // "0x8000" is midway throug
 static volatile long bright = 0;
 static volatile boolean alreadyStreaming = false;
 
-//byte toggle = 0;
 
 ISR(TIMER3_OVF_vect) {
 
@@ -838,6 +843,7 @@ ISR(TIMER3_OVF_vect) {
     // so 0xFF multiplier is acutaly 1x
 
     audio = ( (int) ( circularAudioVideoBuffer[pbp + 1] - 0x80 ) ) * logVolume + 0x8000;
+    //audio = audio ^ 0xFF00;
 
     bright = circularAudioVideoBuffer[pbp] * customContrast2;
     bright >>= 8;
