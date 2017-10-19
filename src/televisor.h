@@ -31,6 +31,12 @@
 // I think this doesnt work because either too much ram used or my fasrer round robin
 
 #define CIRCULAR_BUFFER_SIZE 256    // must be a multiple of sample size, I think its the power of e.g. 128 256 512
+
+#define CIRCULAR_BUFFER_MASK ( CIRCULAR_BUFFER_SIZE - 1 )
+
+// If the buffer size is NOT a power of 2, set CIRCULAR_BUFFER_MASK to zero
+// otherwise, set it to one less than the buffer size.  Used for quick bounds checking.
+
 // right now 256 is too much
 // so 128 runs but no control work in play mode but they do work to select the song
 // if buffer runs out you get small random lines in the image and out of frame

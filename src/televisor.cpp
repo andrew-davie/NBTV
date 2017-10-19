@@ -48,13 +48,14 @@ byte logVolume = 0;
 
 volatile byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
 volatile unsigned long playbackAbsolute;
-volatile unsigned int pbp = 0;
+volatile unsigned short pbp = 0;
 
 unsigned long videoLength;
 volatile unsigned long streamAbsolute;
 volatile unsigned int bufferOffset = 0;
 unsigned long sampleRate;
 long singleFrame;
+short bytesPerSample;               // bytes per sample
 
 volatile unsigned long lastDetectedIR = 0;
 
@@ -169,6 +170,8 @@ ISR(ANALOG_COMP_vect)
         pbDelta = -( singleFrame - pbDelta );         // this needs to be a negative number to get the other direction
 
     //Serial.println(pbDelta);  // max about 3100 nominal about 75 shiftFrame = 75 so thats the matching number!
+
+    //TODO: The 3072 is hardwired, of course - needs to be variable so we can handle other frequencies
 
     double sError = ( deltaSample - ( 3072 - 7 ) );   // spead error - proportional with target of 3072 - bodge to get P perfectly balanced
     double fError = ( pbDelta - 120 + 96 );                 // frame error
@@ -294,11 +297,7 @@ void prepareControlPage() {
     sprintf(nx, "q.pic2=%d", showInfo ? 15 : 20);
     sendCommand(nx);
 
-
-    // Note the hardwired calculation here relying on sample size, frequency to calculate duration
-    // TODO: fix this if using variable frequency source videos
-
-    drawTime((char *) "tmax", videoLength / 38400);   // 2 bytes/sample, 48 samples/line, 32 lines/frame, 12.5 frames/second
+    drawTime((char *) "tmax", videoLength / ( sampleRate * 2 ));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -446,9 +445,8 @@ void stopButtonCallback(void *) {
     DDRC |= 1 << 7;                                   // Set Output Mode C7
     TCCR4A = 0x82;                                    // Activate channel A
 
-    DDRD |= 1 << 7;
-
-    TCCR4C |= 0x09;
+    //DDRD |= 1 << 7;
+    //TCCR4C |= 0x09;
 
     uiMode = nextion ? MODE_TITLE_INIT : MODE_INIT;
 }
@@ -651,12 +649,12 @@ void resetStream(long seeker) {
 
     streamAbsolute = playbackAbsolute = seeker;
     lastDetectedIR = playbackAbsolute - singleFrame + shiftFrame;
-    lastTime = ( (double) playbackAbsolute ) / singleFrame;                                      // keep the PID happy
+    lastTime = ( (double) playbackAbsolute ) / singleFrame;     // keep the PID happy
 
     pbp = 0;
     bufferOffset = 0;
 
-    nbtv.read((void *) circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE);                         // pre-fill the circular buffer so it's valid
+    nbtv.read((void *) circularAudioVideoBuffer, CIRCULAR_BUFFER_SIZE);   // pre-fill the circular buffer so it's valid
 
     digitalWrite(PIN_SOUND_ENABLE, HIGH);             // enable amplifier
 
@@ -756,7 +754,9 @@ boolean wavInfo(char *filename) {
             unsigned int bitsPerSample;
             nbtv.read((void *) &bitsPerSample, 2);
 
-            singleFrame = sampleRate * 2 * bitsPerSample / 8 / 12.5;
+            bytesPerSample = bitsPerSample / 8;
+
+            singleFrame = sampleRate * 2 * bytesPerSample / 12.5;
 
             // Potential "ExtraParamSize/ExtraParams" ignored because PCM
 
@@ -843,7 +843,6 @@ ISR(TIMER3_OVF_vect) {
     // so 0xFF multiplier is acutaly 1x
 
     audio = ( (int) ( circularAudioVideoBuffer[pbp + 1] - 0x80 ) ) * logVolume + 0x8000;
-    //audio = audio ^ 0xFF00;
 
     bright = circularAudioVideoBuffer[pbp] * customContrast2;
     bright >>= 8;
@@ -854,17 +853,21 @@ ISR(TIMER3_OVF_vect) {
     else if (bright > 255)
         bright = 255;
 
-    playbackAbsolute += 2;
-    pbp += 2;
+    playbackAbsolute += bytesPerSample * 2;
 
+    #if ( CIRCULAR_BUFFER_MASK != 0 )
+    pbp = ( pbp + bytesPerSample * 2 ) & CIRCULAR_BUFFER_MASK;
+    #else
+    pbp += bytesPerSample * 2;
     if (pbp >= CIRCULAR_BUFFER_SIZE)
         pbp = 0;
+    #endif
 
     OCR4A = customGamma ? pgm_read_byte(&gamma8[bright]) : (byte) bright;
-    DDRC |= 0x80;                                     // Set Output Mode C7
+    //DDRC |= 0x80;                                   // Set Output Mode C7 (persistent!)
     TCCR4A = 0x82;                                    // Activate channel A
 
-    OCR4D = (byte) ( audio >> 8 );                                                                                                    // Write the audio to pin 6 PWM duty cycle
+    OCR4D = ( (byte *) &audio )[1]; //(byte) ( audio >> 8 );                                                                                                    // Write the audio to pin 6 PWM duty cycle
     DDRD |= 0x80;
     TCCR4C |= 0x09;
 
