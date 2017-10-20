@@ -21,11 +21,11 @@
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-boolean debug = false;
+bool debug = false;
 
 uint32_t selection = 0;             // selected track # from menu
-uint32_t lastSeekPosition;
-long lastSeconds;
+short lastSeekPosition;
+short lastSeconds;
 uint32_t shiftFrame = 75; //110;
 
 long dataPosition;        // WAV file start of data chunk (for rewind/seek positioning)
@@ -34,44 +34,44 @@ long dataPosition;        // WAV file start of data chunk (for rewind/seek posit
 double integral;
 double lastTime;       // this is used to calculate delta time
 
-boolean nexAttached;    //?????
+bool nexAttached;    //?????
 
 int customBrightness = 0;
 uint32_t customGamma = true;                          // technically this could/should be volatile
 uint32_t customRepeat = 0;
-/*volatile*/ long customContrast2 = 256;                  // a X.Y fractional  (8 bit fractions) so 256 = 1.0f   and 512 = 2.0f
+volatile long customContrast2 = 256;                  // a X.Y fractional  (8 bit fractions) so 256 = 1.0f   and 512 = 2.0f
 
 byte logVolume = 0;
+uint32_t customVolume = 128;
 
 //volatile this probably slows it down a lot and is not needed especialy if it is coded right
 // How so?
 
-/*volatile*/ byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
-/*volatile*/ unsigned long playbackAbsolute;
-/*volatile*/ unsigned short pbp = 0;
+volatile byte circularAudioVideoBuffer[CIRCULAR_BUFFER_SIZE];
+volatile unsigned long playbackAbsolute;
+volatile unsigned short pbp = 0;
 
 unsigned long videoLength;
-/*volatile*/ unsigned long streamAbsolute;
-/*volatile*/ unsigned int bufferOffset = 0;
+volatile unsigned long streamAbsolute;
+volatile unsigned int bufferOffset = 0;
 unsigned long sampleRate;
 long singleFrame;
 short bytesPerSample;               // bytes per sample
 
-/*volatile*/ unsigned long lastDetectedIR = 0;
+volatile unsigned long lastDetectedIR = 0;
 
 File nbtv;
 SdFat nbtvSD;
 
 void play(char *filename, unsigned long seekPoint = 0);
-boolean getFileN(int n, int s, char *name, boolean reset, boolean strip);
+bool getFileN(int n, int s, char *name, bool reset, bool strip);
 
 int countFiles();
 void resetStream(long seeker);
 void setupFastPwm(int mode);
 void setupMotorPWM();
 void qInit(char *name);
-void drawTime(char *name, int sec);
-void composeMenuItem(int item, int s, char *p, boolean hunt);
+void composeMenuItem(int item, int s, char *p, bool hunt);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Gamma correction using parabolic curve
@@ -255,16 +255,15 @@ void writeMenuStrings(void * = NULL) {
 
     uint32_t base;
     NexVariable baseVar = NexVariable(1, 14, "bx");
-    if (!baseVar.getValue(&base)) {
-        if (debug)
-            Serial.println(F("Failed getting base"));
+    if (!baseVar.getValue(&base))
+        // if (debug)
+        //     Serial.println(F("Failed getting base"));
         base = 0;
-    }
 
-    if (debug) {
-        Serial.print(F("Base="));
-        Serial.println(base);
-    }
+    // if (debug) {
+    //     Serial.print(F("Base="));
+    //     Serial.println(base);
+    // }
 
     // Based on 'requiredUpdate' from the Nextion we either update only the top line (when up arrow pressed),
     // only the bottom line (when down arrow pressed), or we update ALL of the lines (slider dragged). The
@@ -277,6 +276,18 @@ void writeMenuStrings(void * = NULL) {
         refresh(base, updateReq);
 }
 
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void drawTime(const char *name, int sec) {
+
+    int s = sec % 60;
+    int m = sec / 60;
+
+    char cmd[32];
+    sprintf(cmd, "%s.txt=\"%2d:%02d\"", name, m, s);
+    sendCommand(cmd);
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -302,7 +313,7 @@ void prepareControlPage() {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void commenceSelectedTrack(boolean firstTime = true) {
+void commenceSelectedTrack(bool firstTime = true) {
 
     char nx[64];
 
@@ -317,8 +328,8 @@ void commenceSelectedTrack(boolean firstTime = true) {
             qInit(nx);                                // read and buffer INFO lines --> nextion
         }
 
-        lastSeconds =
-            lastSeekPosition = 99999;
+        lastSeconds = -1;
+        lastSeekPosition = -1;
 
         setupMotorPWM();                              // turn motor on at speed to spool up
         setupFastPwm(PWM187k);                        // get pwm ready for light source
@@ -380,13 +391,14 @@ void brightnessCallback(void *) {
     uint32_t value;
     NexSlider brightnessSlider = NexSlider(2, 5, "b");
     if (brightnessSlider.getValue(&value))
-        customBrightness = (int) ( 256. * ( value - 128. ) / 128. );
+        customBrightness = ( value - 128 ) << 1;
 }
 
 
 void seekerSliderCallback(void *) {
     uint32_t seekTo;
     if (seekerSlider.getValue(&seekTo)) {
+//        resetStream( ( seekTo * videoLength ) >> 8);
         long seekPos = (long) (
             ( (double) seekTo / 255. ) *
             ( (double) videoLength / singleFrame ) );
@@ -403,7 +415,6 @@ void contrastCallback(void *) {
 
 
 void volumeCallback(void *) {
-    uint32_t customVolume;
     volumeSlider.getValue(&customVolume);
     logVolume = pgm_read_byte(&gamma8[customVolume]);
 }
@@ -415,8 +426,6 @@ void gammaCallback(void *) {
 
 
 void repeatCallback(void *) {
-    if (debug)
-        Serial.println(F("Repeat"));
     repeat.getValue(&customRepeat);
 }
 
@@ -427,9 +436,6 @@ void shiftButtonCallback(void *) {
 
 
 void stopButtonCallback(void *) {
-
-    // if (debug)
-    //     Serial.println(F("Stop"));
 
     digitalWrite(PIN_SOUND_ENABLE, LOW);              // disable amplifier
 
@@ -539,10 +545,8 @@ void titleCallback(void *) {
 
 void setup() {
 
-    // Turn OFF the sound amp
     pinMode(PIN_SOUND_ENABLE, OUTPUT);
     digitalWrite(PIN_SOUND_ENABLE, LOW);
-//    digitalWrite(PIN_SOUND_ENABLE, HIGH);
 
 #ifdef DEBUG_TIMING
     pinMode(DEBUG_PIN, OUTPUT);
@@ -607,7 +611,7 @@ int countFiles() {
 // hunt - true: start from the beginning of the SD file list and return the "nth" file
 //       false: just return the very next files
 
-boolean getFileN(int n, int s, char *name, boolean hunt = true, boolean strip = true) {
+bool getFileN(int n, int s, char *name, bool hunt = true, bool strip = true) {
 
     FatFile *vwd = nbtvSD.vwd();
     if (hunt)
@@ -632,7 +636,7 @@ boolean getFileN(int n, int s, char *name, boolean hunt = true, boolean strip = 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void composeMenuItem(int item, int s, char *p, boolean hunt) {
+void composeMenuItem(int item, int s, char *p, bool hunt) {
     sprintf(p, "%2d ", item + 1);
     if (!getFileN(item, s - 3, p + 3, hunt))
         *p = 0;
@@ -701,7 +705,7 @@ void setupIRComparator() {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-boolean wavInfo(char *filename) {
+bool wavInfo(char *filename) {
 
     nbtv = nbtvSD.open(filename);
     if (!nbtv)
@@ -754,9 +758,9 @@ boolean wavInfo(char *filename) {
             unsigned int bitsPerSample;
             nbtv.read((void *) &bitsPerSample, 2);
 
-            bytesPerSample = bitsPerSample / 8;
+            bytesPerSample = bitsPerSample >> 2;         // audio+video accounted for
 
-            singleFrame = sampleRate * 2 * bytesPerSample / 12.5;
+            singleFrame = sampleRate * bytesPerSample / 12.5;
 
             // Potential "ExtraParamSize/ExtraParams" ignored because PCM
 
@@ -784,8 +788,8 @@ boolean wavInfo(char *filename) {
 
 void play(char *filename, unsigned long seekPoint) {
 
-    if (debug)
-        Serial.println(filename);
+//    if (debug)
+//        Serial.println(filename);
 
     if (wavInfo(filename)) {
 
@@ -831,9 +835,9 @@ void play(char *filename, unsigned long seekPoint) {
 // and to the speaker. Handles 16-bit and 8-bit format sample data and adjust brightness, contrast,
 // and volume on-the-fly.
 
-/*static volatile*/ unsigned short audio;       // "0x8000" is the "zero" point
-/*static volatile*/ long bright = 0;
-/*static volatile*/ boolean alreadyStreaming = false;
+static volatile unsigned long audio = 0x8000;       // "0x8000" is midway through range
+static volatile long bright = 0;
+static volatile bool alreadyStreaming = false;
 
 
 ISR(TIMER3_OVF_vect) {
@@ -842,7 +846,7 @@ ISR(TIMER3_OVF_vect) {
     // Audio is pre-set to MAXIMUM volume - so we can't get any louder - only quieter
     // so 0xFF multiplier is acutaly 1x
 
-    audio = 0x8000 + ( circularAudioVideoBuffer[pbp + 1] - 0x80 ) * logVolume;
+    audio = ( (int) ( circularAudioVideoBuffer[pbp + 1] - 0x80 ) ) * logVolume + 0x8000;
 
     bright = circularAudioVideoBuffer[pbp] * customContrast2;
     bright >>= 8;
@@ -853,12 +857,12 @@ ISR(TIMER3_OVF_vect) {
     else if (bright > 255)
         bright = 255;
 
-    playbackAbsolute += bytesPerSample * 2;
+    playbackAbsolute += bytesPerSample;
 
     #if ( CIRCULAR_BUFFER_MASK != 0 )
-    pbp = ( pbp + bytesPerSample * 2 ) & CIRCULAR_BUFFER_MASK;
+    pbp = ( pbp + bytesPerSample ) & CIRCULAR_BUFFER_MASK;
     #else
-    pbp += bytesPerSample * 2;
+    pbp += bytesPerSample;
     if (pbp >= CIRCULAR_BUFFER_SIZE)
         pbp = 0;
     #endif
@@ -901,18 +905,6 @@ ISR(TIMER3_OVF_vect) {
 
         alreadyStreaming = false;
     }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void drawTime(char *name, int sec) {
-
-    int s = sec % 60;
-    int m = sec / 60;
-
-    char cmd[32];
-    sprintf(cmd, "%s.txt=\"%2d:%02d\"", name, m, s);
-    sendCommand(cmd);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -969,9 +961,8 @@ void loop() {
     //--------------------------------------------------------------------------------------------------------------------------
 
     case MODE_INIT:
-
-        logVolume = pgm_read_byte(&gamma8[128]);      // init to 1/2 volume
-        setupIRComparator();                          // looka like it enables the comparator
+        logVolume = pgm_read_byte(&gamma8[customVolume]);
+        setupIRComparator();                          // enables the comparator
         uiMode = MODE_SELECT_TRACK;
         break;
 
@@ -981,6 +972,7 @@ void loop() {
 
         if (nextion) {
 
+#ifdef KEITH_VERSION
 
             bool skipWaste = false;
 
@@ -998,6 +990,20 @@ void loop() {
             }
 
             nexLoop(menu);  // **** this makes the callback happen. basically polling
+#else
+
+            NexText f =  NexText(1, 1, "f0");
+            NexSlider h0 = NexSlider(1, 11, "h0");
+            NexTouch *menu[] = {
+                &f, &h0, NULL
+            };
+
+            f.attachPop(trackSelectCallback, menu[0]);
+            h0.attachPop(writeMenuStrings, menu[1]);
+
+            nexLoop(menu);  // **** this makes the callback happen. basically polling
+
+#endif
 
         }
         else {
@@ -1011,6 +1017,7 @@ void loop() {
     //--------------------------------------------------------------------------------------------------------------------------
 
     case MODE_PLAY:                                   // movie is playing
+
 
 #ifdef DEBUG_TIMING
         digitalWrite(DEBUG_PIN, HIGH);              // round robin speed
@@ -1034,7 +1041,7 @@ void loop() {
 //            sCounter = 0;
         if (nextion) {
             // Display elapsed time in format MM:SS
-            long seconds = playbackAbsolute / singleFrame / 12.5;
+            short seconds = playbackAbsolute / singleFrame / 12.5;
 
 
 
@@ -1051,12 +1058,12 @@ void loop() {
             if (seconds != lastSeconds) {
                 lastSeconds = seconds;
 
-                drawTime((char *) "timePos", seconds);
+                drawTime("timePos", seconds);
 
                 // Adjust the seekbar position to the current playback position
-                uint32_t seekPosition = 256. * playbackAbsolute / videoLength;
+                long seekPosition = ( playbackAbsolute << 8 ) / videoLength;
                 if (seekPosition != lastSeekPosition) {
-                    char cmd[] = "s.val=XXXXXXXXX";
+                    char cmd[] = "s.val=XXX";
                     utoa(seekPosition, cmd + 6, 10); // TODO: value is 0-255 right?  so we only need 3 chars... not 10
                     sendCommand(cmd);
                 }
